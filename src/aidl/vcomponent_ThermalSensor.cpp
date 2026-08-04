@@ -30,7 +30,7 @@
 
 #include "common/logger.h"
 #include "utility/vcomponent_ThermalHelper.h"
-#include "utility/vcomponent_Thermal_ParseConfig.h"
+#include "utility/vcomponent_ThermalParseConfig.h"
 
 #include <binder/IInterface.h>
 #include <binder/Status.h>

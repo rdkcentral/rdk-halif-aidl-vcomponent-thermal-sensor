@@ -30,7 +30,7 @@
 #include "controller/vcomponent_ThermalUtController.h"
 
 #include "utility/vcomponent_ThermalHelper.h"
-#include "utility/vcomponent_Thermal_ParseConfig.h"
+#include "utility/vcomponent_ThermalParseConfig.h"
 
 namespace vcomponent
 {

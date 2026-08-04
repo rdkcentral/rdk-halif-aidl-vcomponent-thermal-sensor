@@ -29,9 +29,10 @@
 
 
 #include "aidl/vcomponent_ThermalSensor.h"
+#include "service/vcomponent_ThermalSensorService.h"
 
 #include "common/logger.h"
-#include "utility/vcomponent_ThermalHelper.h" // if you have trim/readFileToString equivalents
+#include "utility/vcomponent_ThermalHelper.h" 
 
 #include <cstdint>
 #include <cstdlib>
@@ -49,18 +50,7 @@
 namespace
 {
 constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensorService>";
-constexpr const char* defaultConfigPath = "vcomponent_configurations/hfp-sensor-thermal.yaml";
 
-static void printUsage(const char* progName)
-{
-    const char* p = (progName && progName[0] != '\0') ? progName : "RDKThermalSensorService";
-    LOGF_INFO("Usage:");
-    LOGF_INFO("  %s [--hfp <path>] [--port <port>]", p);
-    LOGF_INFO("");
-    LOGF_INFO("Args:");
-    LOGF_INFO("  --hfp <path>       Optional HFP YAML path (default: %s).", defaultConfigPath);
-    LOGF_INFO("  --port <port>      Optional UT Control Plane port (reserved for future use).");
-}
 
 static bool parsePort(const char* s, std::uint16_t* out)
 {
@@ -89,7 +79,7 @@ static bool parseArgs(
     if (!outHfpPath || !outPort)
         return false;
 
-    *outHfpPath = defaultConfigPath;
+    *outHfpPath = vcomponent::thermal::service::kDefaultHfpPath;
     *outPort = std::nullopt;
 
     if (argc < 1 || !argv || !argv[0])
@@ -157,7 +147,7 @@ static void publishAndJoinThreadPool()
     const android::status_t st = sm->addService(android::String16(serviceName), svc);
     if (st != android::OK)
     {
-        LOGF_ERR("%s addService(%s) failed: %d", logPrefix, serviceName, static_cast<int>(st));
+        LOGF_ERROR("%s addService(%s) failed: %d", logPrefix, serviceName, static_cast<int>(st));
         std::exit(1);
     }
 
@@ -165,6 +155,18 @@ static void publishAndJoinThreadPool()
     android::IPCThreadState::self()->joinThreadPool();
 }
 } // namespace
+
+void vcomponent::thermal::service::printUsage(const char* progName)
+{
+    const char* p = (progName && progName[0] != '\0') ? progName : "RDKThermalSensorService";
+    LOGF_INFO("Usage:");
+    LOGF_INFO("  %s [--hfp <path>] [--port <port>]", p);
+    LOGF_INFO("");
+    LOGF_INFO("Args:");
+    LOGF_INFO("  --hfp <path>       Optional HFP YAML path (default: %s).",
+              vcomponent::thermal::service::kDefaultHfpPath);
+    LOGF_INFO("  --port <port>      Optional UT Control Plane port (reserved for future use).");
+}
 
 int main(int argc, char** argv)
 {
@@ -177,7 +179,7 @@ int main(int argc, char** argv)
 
     if (!parseArgs(argc, argv, &configPath, &port))
     {
-        printUsage((argc > 0) ? argv[0] : nullptr);
+        vcomponent::thermal::service::printUsage((argc > 0) ? argv[0] : nullptr);
         return 2;
     }
 
@@ -186,7 +188,7 @@ int main(int argc, char** argv)
 
     if (configPath.empty())
     {
-        LOGF_ERR("%s Empty config path after parsing input", logPrefix);
+        LOGF_ERROR("%s Empty config path after parsing input", logPrefix);
         return 2;
     }
 

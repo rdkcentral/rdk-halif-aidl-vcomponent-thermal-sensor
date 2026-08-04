@@ -21,15 +21,14 @@ service `main()`.
 | --- | --- |
 | `build.sh` | Clones/builds `rdk-halif-aidl` (binder tools + `common` + `sensor` modules) and `ut-core`, then configures/builds this component |
 | `CMakeLists.txt` | Toolchain/standard setup, sysroot vs `build.sh` env detection, HALIF/Binder/ut-control discovery, config staging, install rules |
-| `aidl_lib/Makefile` | Helper to compile AIDL-generated C++ into `libhal_aidl.so` |
 | `vcomponent_configurations/hfp-sensor-thermal.yaml` | HFP feature profile consumed at runtime and installed with the component |
 | `vcomponent_configurations/hfp-sensor-thermal.yaml` | Verbatim copy of the upstream `rdk-halif-aidl` thermal HFP profile (no line edits) |
 | `include/common/logger.h` | Printf-style logging helper macros (`LOGF_*`) |
 | `include/utility/vcomponent_ThermalHfpConfigUtils.h` | Thermal HFP configuration model mirroring the YAML hierarchy |
 | `include/utility/vcomponent_ThermalHelper.h` | Small helper utility declarations |
-| `include/utility/vcomponent_Thermal_ParseConfig.h` | Thermal-only HFP YAML parsing entrypoints |
+| `include/utility/vcomponent_ThermalParseConfig.h` | Thermal-only HFP YAML parsing entrypoints |
 | `include/controller/vcomponent_ThermalUtController.h` | UT-controller facade contract |
-| `src/utility/vcomponent_Thermal_ParseConfig.cpp` | Implemented parser, scoped strictly to the `sensor.thermal` keys required by the thermal YAML |
+| `src/utility/vcomponent_ThermalParseConfig.cpp` | Implemented parser, scoped strictly to the `sensor.thermal` keys required by the thermal YAML |
 | `src/utility/vcomponent_ThermalHelper.cpp` | Skeleton stubs for the helper utilities |
 | `src/controller/vcomponent_ThermalUtController.cpp` | Skeleton stubs for the UT controller facade |
 | `src/service/vcomponent_ThermalSensorService.cpp` | Skeleton `main()` (argument handling + controller wiring only) |

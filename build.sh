@@ -47,7 +47,6 @@ OUT_TAR_FILE=vcomponent-SensorThermal.tar.gz
 declare -r UT_CORE_DIR="${TOP}/ut-core"
 declare -r TOP_BUILD_DIR="${TOP}/build"
 declare -r BUILD_INSTALL_PREFIX=${TOP_BUILD_DIR}/usr
-declare -r AIDL_LIB_DIR=${TOP}/aidl_lib
 declare -r RDK_HAL_DIR="${RDK_HAL_DIR:-${TOP}/rdk-halif-aidl}"
 
 mkdir -p $TOP_BUILD_DIR

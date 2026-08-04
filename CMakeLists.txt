@@ -117,7 +117,7 @@ set(THERMAL_CORE_SOURCES
     src/aidl/vcomponent_ThermalEventListener.cpp
 
     src/utility/vcomponent_ThermalHelper.cpp
-    src/utility/vcomponent_Thermal_ParseConfig.cpp
+    src/utility/vcomponent_ThermalParseConfig.cpp
 
     src/controller/vcomponent_ThermalUtController.cpp
 )
@@ -342,4 +342,8 @@ install(DIRECTORY ${PROJECT_INCLUDE_DIR}/aidl/
 
 install(DIRECTORY ${PROJECT_INCLUDE_DIR}/common/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/common
+        FILES_MATCHING PATTERN "*.h")
+
+install(DIRECTORY ${PROJECT_INCLUDE_DIR}/service/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/service
         FILES_MATCHING PATTERN "*.h")

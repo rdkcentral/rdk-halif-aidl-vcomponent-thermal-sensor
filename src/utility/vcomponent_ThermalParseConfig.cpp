@@ -18,10 +18,10 @@
  */
 
 /**
- * @file vcomponent_Thermal_ParseConfig.cpp
+ * @file vcomponent_ThermalParseConfig.cpp
  * @brief SKELETON implementation of the Thermal HFP YAML parser.
  *
- * Every function declared in vcomponent_Thermal_ParseConfig.h is defined here
+ * Every function declared in vcomponent_ThermalParseConfig.h is defined here
  * with a placeholder body only, so the skeleton compiles and links without
  * pulling in any parsing back-end (ut-core / ut-control KVP).
  *
@@ -45,7 +45,7 @@
  *      recovered < exceeded < shutdown
  */
 
-#include "utility/vcomponent_Thermal_ParseConfig.h"
+#include "utility/vcomponent_ThermalParseConfig.h"
 
 namespace vcomponent
 {

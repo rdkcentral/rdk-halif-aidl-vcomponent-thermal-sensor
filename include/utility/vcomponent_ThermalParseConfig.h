@@ -20,11 +20,11 @@
 #pragma once
 
 /**
- * @file vcomponent_Thermal_ParseConfig.h
+ * @file vcomponent_ThermalParseConfig.h
  * @brief SKELETON declarations for loading Thermal configuration from HFP YAML.
  *
  * This header declares the parser contract only; all bodies live as stubs in
- * src/utility/vcomponent_Thermal_ParseConfig.cpp and must be implemented.
+ * src/utility/vcomponent_ThermalParseConfig.cpp and must be implemented.
  *
  * This module mirrors the structure used by other vcomponent parsers: create a
  * KVP instance with vcomponentkvp_create_instance(), walk profile keys, then
