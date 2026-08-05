@@ -19,12 +19,13 @@
 
 /**
  * @file vcomponent_ThermalSensorService.cpp
- * @brief SKELETON entrypoint for the Thermal Sensor vcomponent service.
+ * @brief Entrypoint for the Thermal Sensor vcomponent service.
  *
- * This skeleton intentionally contains NO thermal AIDL implementation. It only
- * performs argument handling and hands the HFP YAML path to the UT controller
- * facade. Once the AIDL layer is added, publish the binder service here
- * (ThermalSensor::setConfigurationPath() / publishAndJoinThreadPool()).
+ * The entrypoint parses command-line arguments, loads and validates the HFP
+ * YAML profile before publishing the binder service, and passes the selected
+ * profile path to the service implementation. The binder runtime currently
+ * retains that path but does not yet use the parsed model for thermal policy
+ * evaluation or telemetry.
  */
 
 
@@ -33,6 +34,7 @@
 
 #include "common/logger.h"
 #include "utility/vcomponent_ThermalHelper.h" 
+#include "utility/vcomponent_ThermalParseConfig.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -50,6 +52,13 @@
 namespace
 {
 constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensorService>";
+constexpr int kDecimalBase = 10;
+constexpr long kMinimumPortNumber = 0;
+constexpr long kMaximumPortNumber = 65535;
+constexpr int kFirstCommandLineArgumentIndex = 1;
+constexpr int kArgumentValueOffset = 1;
+constexpr int kServiceStartupFailureExitCode = 1;
+constexpr int kInvalidArgumentsExitCode = 2;
 
 
 static bool parsePort(const char* s, std::uint16_t* out)
@@ -58,12 +67,12 @@ static bool parsePort(const char* s, std::uint16_t* out)
         return false;
 
     char* end = nullptr;
-    const long v = std::strtol(s, &end, 10);
+    const long v = std::strtol(s, &end, kDecimalBase);
 
     if (!end || *end != '\0')
         return false;
 
-    if (v <= 0 || v > 65535)
+    if (v <= kMinimumPortNumber || v > kMaximumPortNumber)
         return false;
 
     *out = static_cast<std::uint16_t>(v);
@@ -85,7 +94,7 @@ static bool parseArgs(
     if (argc < 1 || !argv || !argv[0])
         return false;
 
-    for (int i = 1; i < argc; ++i)
+    for (int i = kFirstCommandLineArgumentIndex; i < argc; ++i)
     {
         const char* arg = argv[i];
         if (!arg)
@@ -97,29 +106,36 @@ static bool parseArgs(
         }
         else if (std::strcmp(arg, "--hfp") == 0)
         {
-            if (i + 1 >= argc || !argv[i + 1] || argv[i + 1][0] == '\0')
+            if (i + kArgumentValueOffset >= argc ||
+                !argv[i + kArgumentValueOffset] ||
+                argv[i + kArgumentValueOffset][0] == '\0')
             {
                 LOGF_ERROR("%s Missing value for --hfp", logPrefix);
                 return false;
             }
-            *outHfpPath = argv[i + 1];
-            ++i;
+            *outHfpPath = argv[i + kArgumentValueOffset];
+            i += kArgumentValueOffset;
         }
         else if (std::strcmp(arg, "--port") == 0)
         {
-            if (i + 1 >= argc || !argv[i + 1] || argv[i + 1][0] == '\0')
+            if (i + kArgumentValueOffset >= argc ||
+                !argv[i + kArgumentValueOffset] ||
+                argv[i + kArgumentValueOffset][0] == '\0')
             {
                 LOGF_ERROR("%s Missing value for --port", logPrefix);
                 return false;
             }
             std::uint16_t port = 0;
-            if (!parsePort(argv[i + 1], &port))
+            if (!parsePort(argv[i + kArgumentValueOffset], &port))
             {
-                LOGF_ERROR("%s Invalid --port value: %s", logPrefix, argv[i + 1]);
+                LOGF_ERROR(
+                    "%s Invalid --port value: %s",
+                    logPrefix,
+                    argv[i + kArgumentValueOffset]);
                 return false;
             }
             *outPort = port;
-            ++i;
+            i += kArgumentValueOffset;
         }
         else
         {
@@ -148,7 +164,7 @@ static void publishAndJoinThreadPool()
     if (st != android::OK)
     {
         LOGF_ERROR("%s addService(%s) failed: %d", logPrefix, serviceName, static_cast<int>(st));
-        std::exit(1);
+        std::exit(kServiceStartupFailureExitCode);
     }
 
     android::ProcessState::self()->startThreadPool();
@@ -180,17 +196,36 @@ int main(int argc, char** argv)
     if (!parseArgs(argc, argv, &configPath, &port))
     {
         vcomponent::thermal::service::printUsage((argc > 0) ? argv[0] : nullptr);
-        return 2;
+        return kInvalidArgumentsExitCode;
     }
 
-    // If you have a trim helper like HDMI, use it; otherwise remove this.
+    // Normalize surrounding whitespace before opening the requested profile.
     configPath = vcomponent::utility::trim(configPath);
 
     if (configPath.empty())
     {
         LOGF_ERROR("%s Empty config path after parsing input", logPrefix);
-        return 2;
+        return kInvalidArgumentsExitCode;
     }
+
+    vcomponent::utility::ThermalHfpConfig thermalConfig;
+    std::string configurationError;
+    if (!vcomponent::utility::loadThermalHfpConfigFromYaml(
+            configPath, &thermalConfig, &configurationError))
+    {
+        LOGF_ERROR(
+            "%s Failed to load HFP configuration '%s': %s",
+            logPrefix,
+            configPath.c_str(),
+            configurationError.c_str());
+        return kInvalidArgumentsExitCode;
+    }
+
+    LOGF_INFO(
+        "%s Loaded HFP configuration '%s' with %zu sensor configuration(s)",
+        logPrefix,
+        configPath.c_str(),
+        thermalConfig.sensors.size());
 
     const char* serviceName = com::rdk::hal::sensor::thermal::ThermalSensor::getServiceName();
     if (!serviceName)
@@ -203,16 +238,17 @@ int main(int argc, char** argv)
 
     if (port.has_value())
     {
-        // Skeleton: you can wire this later to your UT controller if desired.
+        // The optional port is accepted and logged; it is not yet connected to
+        // the service's UT controller.
         LOGF_INFO("%s --port provided (reserved): %u",
                   logPrefix,
                   static_cast<unsigned>(*port));
     }
 
-    // Hand off configuration to the service implementation (even if skeleton).
+    // Preserve the selected profile path for the binder service instance.
     com::rdk::hal::sensor::thermal::ThermalSensor::setConfigurationPath(configPath);
 
-    // Publish and block forever.
+    // Publish the service and join the binder thread pool.
     publishAndJoinThreadPool();
 
     return 0;
