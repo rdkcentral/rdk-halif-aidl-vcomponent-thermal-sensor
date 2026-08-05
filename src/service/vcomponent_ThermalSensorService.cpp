@@ -52,6 +52,13 @@
 namespace
 {
 constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensorService>";
+constexpr int kDecimalBase = 10;
+constexpr long kMinimumPortNumber = 0;
+constexpr long kMaximumPortNumber = 65535;
+constexpr int kFirstCommandLineArgumentIndex = 1;
+constexpr int kArgumentValueOffset = 1;
+constexpr int kServiceStartupFailureExitCode = 1;
+constexpr int kInvalidArgumentsExitCode = 2;
 
 
 static bool parsePort(const char* s, std::uint16_t* out)
@@ -60,12 +67,12 @@ static bool parsePort(const char* s, std::uint16_t* out)
         return false;
 
     char* end = nullptr;
-    const long v = std::strtol(s, &end, 10);
+    const long v = std::strtol(s, &end, kDecimalBase);
 
     if (!end || *end != '\0')
         return false;
 
-    if (v <= 0 || v > 65535)
+    if (v <= kMinimumPortNumber || v > kMaximumPortNumber)
         return false;
 
     *out = static_cast<std::uint16_t>(v);
@@ -87,7 +94,7 @@ static bool parseArgs(
     if (argc < 1 || !argv || !argv[0])
         return false;
 
-    for (int i = 1; i < argc; ++i)
+    for (int i = kFirstCommandLineArgumentIndex; i < argc; ++i)
     {
         const char* arg = argv[i];
         if (!arg)
@@ -99,29 +106,36 @@ static bool parseArgs(
         }
         else if (std::strcmp(arg, "--hfp") == 0)
         {
-            if (i + 1 >= argc || !argv[i + 1] || argv[i + 1][0] == '\0')
+            if (i + kArgumentValueOffset >= argc ||
+                !argv[i + kArgumentValueOffset] ||
+                argv[i + kArgumentValueOffset][0] == '\0')
             {
                 LOGF_ERROR("%s Missing value for --hfp", logPrefix);
                 return false;
             }
-            *outHfpPath = argv[i + 1];
-            ++i;
+            *outHfpPath = argv[i + kArgumentValueOffset];
+            i += kArgumentValueOffset;
         }
         else if (std::strcmp(arg, "--port") == 0)
         {
-            if (i + 1 >= argc || !argv[i + 1] || argv[i + 1][0] == '\0')
+            if (i + kArgumentValueOffset >= argc ||
+                !argv[i + kArgumentValueOffset] ||
+                argv[i + kArgumentValueOffset][0] == '\0')
             {
                 LOGF_ERROR("%s Missing value for --port", logPrefix);
                 return false;
             }
             std::uint16_t port = 0;
-            if (!parsePort(argv[i + 1], &port))
+            if (!parsePort(argv[i + kArgumentValueOffset], &port))
             {
-                LOGF_ERROR("%s Invalid --port value: %s", logPrefix, argv[i + 1]);
+                LOGF_ERROR(
+                    "%s Invalid --port value: %s",
+                    logPrefix,
+                    argv[i + kArgumentValueOffset]);
                 return false;
             }
             *outPort = port;
-            ++i;
+            i += kArgumentValueOffset;
         }
         else
         {
@@ -150,7 +164,7 @@ static void publishAndJoinThreadPool()
     if (st != android::OK)
     {
         LOGF_ERROR("%s addService(%s) failed: %d", logPrefix, serviceName, static_cast<int>(st));
-        std::exit(1);
+        std::exit(kServiceStartupFailureExitCode);
     }
 
     android::ProcessState::self()->startThreadPool();
@@ -182,7 +196,7 @@ int main(int argc, char** argv)
     if (!parseArgs(argc, argv, &configPath, &port))
     {
         vcomponent::thermal::service::printUsage((argc > 0) ? argv[0] : nullptr);
-        return 2;
+        return kInvalidArgumentsExitCode;
     }
 
     // Normalize surrounding whitespace before opening the requested profile.
@@ -191,7 +205,7 @@ int main(int argc, char** argv)
     if (configPath.empty())
     {
         LOGF_ERROR("%s Empty config path after parsing input", logPrefix);
-        return 2;
+        return kInvalidArgumentsExitCode;
     }
 
     vcomponent::utility::ThermalHfpConfig thermalConfig;
@@ -204,7 +218,7 @@ int main(int argc, char** argv)
             logPrefix,
             configPath.c_str(),
             configurationError.c_str());
-        return 2;
+        return kInvalidArgumentsExitCode;
     }
 
     LOGF_INFO(
