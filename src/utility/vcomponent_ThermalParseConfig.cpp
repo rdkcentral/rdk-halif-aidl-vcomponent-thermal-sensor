@@ -378,6 +378,11 @@ bool vcomponent_Thermal_parse_config(
     ThermalHfpConfig& thermalConfiguration,
     std::string* outError)
 {
+    if (outError != nullptr)
+    {
+        outError->clear();
+    }
+
     if (configurationFile == nullptr || std::strlen(configurationFile) == 0)
     {
         thermalConfiguration = ThermalHfpConfig{};
