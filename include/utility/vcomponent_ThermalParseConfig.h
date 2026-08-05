@@ -21,14 +21,11 @@
 
 /**
  * @file vcomponent_ThermalParseConfig.h
- * @brief SKELETON declarations for loading Thermal configuration from HFP YAML.
+ * @brief Declarations for loading Thermal configuration from HFP YAML.
  *
- * This header declares the parser contract only; all bodies live as stubs in
- * src/utility/vcomponent_ThermalParseConfig.cpp and must be implemented.
- *
- * This module mirrors the structure used by other vcomponent parsers: create a
- * KVP instance with vcomponentkvp_create_instance(), walk profile keys, then
- * release the instance with vcomponentkvp_destroy_instance().
+ * The implementation opens the profile through ut-core/KVP APIs, reads the
+ * `sensor.thermal` list, converts supported fields into ThermalHfpConfig, and
+ * releases the KVP instance before returning.
  */
 
 #include "utility/vcomponent_ThermalHfpConfigUtils.h"
@@ -64,13 +61,19 @@ void vcomponentkvp_destroy_instance(void* instance);
  *
  * The parser reads the `sensor.thermal` profile list from the supplied YAML
  * file using ut-core/ut-control KVP APIs. Field names intentionally match the
- * YAML names used by the AIDL specification HFP file.
+ * YAML names used by the AIDL specification HFP file. It requires the
+ * top-level `sensor.thermal` profile and each sensor `id`, and rejects fields
+ * that are present but cannot be converted to their declared numeric types.
+ * It does not perform cross-field semantic validation, such as range ordering
+ * or trigger-threshold ordering.
  *
  * @param[in]  configurationFile    YAML file path. Must not be nullptr.
  * @param[out] thermalConfiguration Output config populated on success.
  * @param[out] outError             Optional error string populated on failure.
  *
- * @return true on success, false on error.
+ * @return true when the profile is opened and all parsed fields are valid;
+ *         false when required structure is missing or a supported field cannot
+ *         be read or converted.
  */
 bool vcomponent_Thermal_parse_config(
     char* configurationFile,

@@ -21,11 +21,12 @@
 
 /**
  * @file vcomponent_ThermalHfpConfigUtils.h
- * @brief SKELETON Thermal HFP configuration model (data declarations only).
+ * @brief Thermal HFP configuration data model.
  *
- * These structures mirror the unchanged upstream
- * vcomponent_configurations/hfp-sensor-thermal.yaml layout. No parsing or
- * behaviour is implemented here.
+ * These structures mirror the
+ * vcomponent_configurations/hfp-sensor-thermal.yaml layout. Parsing is
+ * implemented in vcomponent_ThermalParseConfig.cpp; this header defines only
+ * the in-memory representation.
  *
  * The model intentionally follows the hfp-sensor-thermal.yaml hierarchy:
  *
@@ -38,8 +39,9 @@
  *       policy { shutdown_min_downtime_s, recovery { strategy, min_cooldown_seconds } }
  *       vendor { vendorCode, vendorInfo }
  *
- * Keeping the in-memory structure close to the YAML makes the parser simple,
- * reviewable, and easy to extend when new AIDL/HFP fields are added.
+ * Keeping the in-memory structure close to the YAML makes the parser
+ * reviewable and supports future runtime use when new AIDL/HFP fields are
+ * added.
  */
 
 #include <cstdint>
@@ -63,7 +65,8 @@ struct ThermalRange
 /**
  * @brief Vendor thermal policy trigger points in degrees Celsius.
  *
- * Values must satisfy: recovered < exceeded < shutdown.
+ * The HFP policy convention is recovered < exceeded < shutdown. The current
+ * parser stores supplied values but does not enforce this ordering.
  */
 struct ThermalTriggers
 {

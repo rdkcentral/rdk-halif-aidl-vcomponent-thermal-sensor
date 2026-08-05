@@ -19,12 +19,13 @@
 
 /**
  * @file vcomponent_ThermalSensorService.cpp
- * @brief SKELETON entrypoint for the Thermal Sensor vcomponent service.
+ * @brief Entrypoint for the Thermal Sensor vcomponent service.
  *
- * This skeleton intentionally contains NO thermal AIDL implementation. It only
- * performs argument handling and hands the HFP YAML path to the UT controller
- * facade. Once the AIDL layer is added, publish the binder service here
- * (ThermalSensor::setConfigurationPath() / publishAndJoinThreadPool()).
+ * The entrypoint parses command-line arguments, loads and validates the HFP
+ * YAML profile before publishing the binder service, and passes the selected
+ * profile path to the service implementation. The binder runtime currently
+ * retains that path but does not yet use the parsed model for thermal policy
+ * evaluation or telemetry.
  */
 
 
@@ -33,6 +34,7 @@
 
 #include "common/logger.h"
 #include "utility/vcomponent_ThermalHelper.h" 
+#include "utility/vcomponent_ThermalParseConfig.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -183,7 +185,7 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    // If you have a trim helper like HDMI, use it; otherwise remove this.
+    // Normalize surrounding whitespace before opening the requested profile.
     configPath = vcomponent::utility::trim(configPath);
 
     if (configPath.empty())
@@ -191,6 +193,25 @@ int main(int argc, char** argv)
         LOGF_ERROR("%s Empty config path after parsing input", logPrefix);
         return 2;
     }
+
+    vcomponent::utility::ThermalHfpConfig thermalConfig;
+    std::string configurationError;
+    if (!vcomponent::utility::loadThermalHfpConfigFromYaml(
+            configPath, &thermalConfig, &configurationError))
+    {
+        LOGF_ERROR(
+            "%s Failed to load HFP configuration '%s': %s",
+            logPrefix,
+            configPath.c_str(),
+            configurationError.c_str());
+        return 2;
+    }
+
+    LOGF_INFO(
+        "%s Loaded HFP configuration '%s' with %zu sensor configuration(s)",
+        logPrefix,
+        configPath.c_str(),
+        thermalConfig.sensors.size());
 
     const char* serviceName = com::rdk::hal::sensor::thermal::ThermalSensor::getServiceName();
     if (!serviceName)
@@ -203,16 +224,17 @@ int main(int argc, char** argv)
 
     if (port.has_value())
     {
-        // Skeleton: you can wire this later to your UT controller if desired.
+        // The optional port is accepted and logged; it is not yet connected to
+        // the service's UT controller.
         LOGF_INFO("%s --port provided (reserved): %u",
                   logPrefix,
                   static_cast<unsigned>(*port));
     }
 
-    // Hand off configuration to the service implementation (even if skeleton).
+    // Preserve the selected profile path for the binder service instance.
     com::rdk::hal::sensor::thermal::ThermalSensor::setConfigurationPath(configPath);
 
-    // Publish and block forever.
+    // Publish the service and join the binder thread pool.
     publishAndJoinThreadPool();
 
     return 0;

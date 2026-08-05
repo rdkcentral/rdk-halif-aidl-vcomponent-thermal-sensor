@@ -21,9 +21,11 @@
  * @file vcomponent_ThermalSensor.cpp
  * @brief Skeleton implementation of the thermal AIDL binder service.
  *
- * This implementation intentionally does not implement real thermal policy,
- * UT control-plane behavior, or HFP parsing yet. It provides minimal, deterministic
- * stub behavior so that the AIDL contract is honored and automated tests can run.
+ * The executable parses the HFP profile before publishing this service and
+ * supplies its path through setConfigurationPath(). This implementation
+ * currently retains the path only; it does not load the parsed model into the
+ * runtime. Thermal policy and UT control-plane behavior therefore remain
+ * unimplemented, and the AIDL methods provide deterministic stub responses.
  */
 
 #include "aidl/vcomponent_ThermalSensor.h"
@@ -70,8 +72,9 @@ std::string g_configurationPath = defaultConfigPath;
 
 ThermalSensor::ThermalSensor()
 {
-    // TODO(skeleton): initialize UT control plane on kUtControlPlanePort,
-    // load HFP configuration and start the UT worker thread.
+    // TODO(skeleton): initialize the UT control plane on kUtControlPlanePort
+    // and start the worker. The entrypoint has already validated the HFP
+    // profile, but this runtime does not yet consume its parsed configuration.
     (void)kUtControlPlanePort;
 
     LOGF_INFO("%s: constructed (skeleton)", componentName);
@@ -94,8 +97,9 @@ void ThermalSensor::setConfigurationPath(const std::string& configurationPath)
 
 bool ThermalSensor::loadConfiguration(const std::string& configurationPath)
 {
-    // TODO(skeleton): call vcomponent::utility::loadThermalHfpConfigFromYaml()
-    // and seed m_sensors / m_currentState from the parsed model.
+    // TODO(skeleton): consume the startup-selected profile by loading its
+    // parsed model into m_sensors and deriving m_currentState. This method is
+    // not currently called because startup validation occurs in main().
     (void)configurationPath;
     return false;
 }
