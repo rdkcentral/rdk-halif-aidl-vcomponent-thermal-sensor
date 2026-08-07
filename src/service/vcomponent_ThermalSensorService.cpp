@@ -22,10 +22,10 @@
  * @brief Entrypoint for the Thermal Sensor vcomponent service.
  *
  * The entrypoint parses command-line arguments, loads and validates the HFP
- * YAML profile before publishing the binder service, and passes the selected
- * profile path to the service implementation. The binder runtime currently
- * retains that path but does not yet use the parsed model for thermal policy
- * evaluation or telemetry.
+ * YAML profile before publishing the binder service, then passes the parsed
+ * configuration to the service implementation. The Binder runtime initializes
+ * its sensor model from that configuration and exposes it through the thermal
+ * AIDL state and telemetry APIs. UT/control-plane work remains reserved.
  */
 
 
@@ -147,7 +147,7 @@ static bool parseArgs(
     return true;
 }
 
-static void publishAndJoinThreadPool()
+static void publishAndJoinThreadPool(vcomponent::utility::ThermalHfpConfig thermalConfig)
 {
     using com::rdk::hal::sensor::thermal::ThermalSensor;
 
@@ -156,7 +156,7 @@ static void publishAndJoinThreadPool()
         serviceName = "(null)";
 
     android::sp<android::IServiceManager> sm = android::defaultServiceManager();
-    android::sp<ThermalSensor> svc = new ThermalSensor();
+    android::sp<ThermalSensor> svc = new ThermalSensor(std::move(thermalConfig));
 
     LOGF_INFO("%s Publishing Thermal binder service (serviceName=%s)", logPrefix, serviceName);
 
@@ -175,13 +175,15 @@ static void publishAndJoinThreadPool()
 void vcomponent::thermal::service::printUsage(const char* progName)
 {
     const char* p = (progName && progName[0] != '\0') ? progName : "RDKThermalSensorService";
-    LOGF_INFO("Usage:");
-    LOGF_INFO("  %s [--hfp <path>] [--port <port>]", p);
-    LOGF_INFO("");
-    LOGF_INFO("Args:");
-    LOGF_INFO("  --hfp <path>       Optional HFP YAML path (default: %s).",
+    LOGF_INFO("%s Usage:", logPrefix);
+    LOGF_INFO("%s   %s [--hfp <path>] [--port <port>]", logPrefix, p);
+    LOGF_INFO("%s", logPrefix);
+    LOGF_INFO("%s Args:", logPrefix);
+    LOGF_INFO("%s   --hfp <path>       Optional HFP YAML path (default: %s).",
+              logPrefix,
               vcomponent::thermal::service::kDefaultHfpPath);
-    LOGF_INFO("  --port <port>      Optional UT Control Plane port (reserved for future use).");
+    LOGF_INFO("%s   --port <port>      Optional UT Control Plane port (reserved for future use).",
+              logPrefix);
 }
 
 int main(int argc, char** argv)
@@ -245,11 +247,9 @@ int main(int argc, char** argv)
                   static_cast<unsigned>(*port));
     }
 
-    // Preserve the selected profile path for the binder service instance.
-    com::rdk::hal::sensor::thermal::ThermalSensor::setConfigurationPath(configPath);
-
-    // Publish the service and join the binder thread pool.
-    publishAndJoinThreadPool();
+    // Publish the service with the startup-validated configuration and join
+    // the Binder thread pool. The YAML profile is intentionally parsed once.
+    publishAndJoinThreadPool(std::move(thermalConfig));
 
     return 0;
 }

@@ -21,17 +21,16 @@
 
 /**
  * @file vcomponent_ThermalEventListener.h
- * @brief SKELETON client-side Binder stub for the thermal event listener AIDL interface.
+ * @brief Client-side Binder stub for the thermal event listener AIDL interface.
  *
- * Upstream AIDL interface (sensor/current):
+ * Upstream AIDL interface:
  *   com.rdk.hal.sensor.thermal.IThermalEventListener
  *
  * Usage:
  *   A client can instantiate this object and pass it into:
  *     IThermalSensor::registerEventListener(IThermalEventListener)
  *
- * The skeleton declares the callback surface only; the source file provides a
- * placeholder body.
+ * The callback logs received ActionEvent payload details for observability.
  */
 
 #include <com/rdk/hal/sensor/thermal/ActionEvent.h>
@@ -51,10 +50,10 @@ namespace thermal
 {
 
 /**
- * @brief Minimal IThermalEventListener skeleton.
+ * @brief Minimal IThermalEventListener implementation for local clients/tests.
  *
- * This listener is intentionally a thin AIDL callback stub: it exposes no extra
- * non-AIDL APIs and implements no event handling behaviour.
+ * This listener is intentionally thin: it acknowledges callback delivery and
+ * logs the ActionEvent fields without adding non-AIDL behavior.
  */
 class ThermalEventListener final : public BnThermalEventListener
 {
@@ -77,7 +76,7 @@ public:
     /**
      * @brief AIDL callback invoked when the thermal state changes.
      *
-     * @param[in] event Thermal action event carrying state and reading data.
+     * @param[in] event Thermal action event carrying state and optional reading data.
      *
      * @return Binder status.
      */

@@ -44,6 +44,7 @@ namespace
 
 constexpr const char* THERMAL_ROOT = "sensor";
 constexpr const char* THERMAL_LIST = "sensor.thermal";
+constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalParseConfig>";
 constexpr size_t KVP_BUFFER_SIZE = UT_KVP_MAX_ELEMENT_SIZE;
 
 void setError(std::string* outError, const std::string& message)
@@ -435,7 +436,8 @@ bool vcomponent_Thermal_parse_config(
     }
 
     LOGF_INFO(
-        "Successfully parsed thermal HFP YAML '%s' with %zu sensor configuration(s).",
+        "%s Successfully parsed thermal HFP YAML '%s' with %zu sensor configuration(s).",
+        logPrefix,
         configurationFile,
         thermalConfiguration.sensors.size());
     return true;

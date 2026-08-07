@@ -19,33 +19,28 @@
 
 /**
  * @file vcomponent_ThermalSensor.cpp
- * @brief Skeleton implementation of the thermal AIDL binder service.
+ * @brief Implementation of the thermal sensor AIDL Binder service.
  *
- * The executable parses the HFP profile before publishing this service and
- * supplies its path through setConfigurationPath(). This implementation
- * currently retains the path only; it does not load the parsed model into the
- * runtime. Thermal policy and UT control-plane behavior therefore remain
- * unimplemented, and the AIDL methods provide deterministic stub responses.
+ * The service is published as `sensor.thermal` and implements the AIDL APIs for
+ * listener registration, aggregate state lookup, and temperature telemetry.
+ * Sensor records are initialized from the selected HFP YAML profile. Runtime
+ * control-plane orchestration remains intentionally excluded from this pass.
  */
 
 #include "aidl/vcomponent_ThermalSensor.h"
 
 #include "common/logger.h"
 #include "utility/vcomponent_ThermalHelper.h"
-#include "utility/vcomponent_ThermalParseConfig.h"
 
 #include <binder/IInterface.h>
 #include <binder/Status.h>
 #include <utils/String16.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <tuple>
 #include <vector>
-
 
 namespace com
 {
@@ -60,91 +55,282 @@ namespace thermal
 
 namespace
 {
-constexpr const char* componentName = "ThermalSensor";
-constexpr const char* defaultConfigPath = "vcomponent_configurations/hfp-sensor-thermal.yaml";
+constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensor>";
 
-// UT control-plane port reserved for thermal orchestration.
-constexpr std::uint16_t kUtControlPlanePort = 8085;
+int stateSeverity(State state)
+{
+    switch (state)
+    {
+        case State::CRITICAL_SHUTDOWN_IMMINENT:
+            return 3;
+        case State::CRITICAL_TEMPERATURE_EXCEEDED:
+            return 2;
+        case State::CRITICAL_TEMPERATURE_RECOVERED:
+            return 1;
+        case State::NORMAL:
+        default:
+            return 0;
+    }
+}
 
-std::mutex g_configurationPathMutex;
-std::string g_configurationPath = defaultConfigPath;
+State moreSevere(State left, State right)
+{
+    return (stateSeverity(right) > stateSeverity(left)) ? right : left;
+}
+
+TemperatureReading makeReadingFromConfig(
+    const vcomponent::utility::ThermalSensorConfig& config,
+    double temperatureCelsius,
+    std::int64_t timestampMs)
+{
+    TemperatureReading reading{};
+    const std::string sensorName = config.sensorName.empty() ? config.id : config.sensorName;
+
+    reading.sensorName = android::String16(sensorName.c_str());
+    reading.location = android::String16(config.location.c_str());
+    reading.temperatureCelsius = temperatureCelsius;
+    reading.timestampMonotonicMs = timestampMs;
+    reading.vendorCode = config.vendor.vendorCode;
+    reading.vendorInfo = android::String16(config.vendor.vendorInfo.c_str());
+
+    return reading;
+}
+
+double initialTemperatureForSensor(const vcomponent::utility::ThermalSensorConfig& config)
+{
+    const double minTemperature = config.operationalTemperatureCelsius.min;
+    const double maxTemperature = config.operationalTemperatureCelsius.max;
+
+    if (maxTemperature > minTemperature)
+    {
+        return minTemperature + ((maxTemperature - minTemperature) / 2.0);
+    }
+
+    if (config.triggers.criticalTemperatureRecoveredCelsius > 0.0)
+    {
+        return config.triggers.criticalTemperatureRecoveredCelsius;
+    }
+
+    return 0.0;
+}
 } // namespace
 
-ThermalSensor::ThermalSensor()
+ThermalSensor::ThermalSensor(vcomponent::utility::ThermalHfpConfig configuration)
 {
-    // TODO(skeleton): initialize the UT control plane on kUtControlPlanePort
-    // and start the worker. The entrypoint has already validated the HFP
-    // profile, but this runtime does not yet consume its parsed configuration.
-    (void)kUtControlPlanePort;
+    LOGF_INFO("%s: constructing AIDL service instance", logPrefix);
 
-    LOGF_INFO("%s: constructed (skeleton)", componentName);
+    initializeSensors(std::move(configuration));
 
-    // Default state per HAL definition.
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_currentState = State::NORMAL;
+    LOGF_INFO(
+        "%s: constructed (serviceName=%s)",
+        logPrefix,
+        getServiceName());
 }
 
 ThermalSensor::~ThermalSensor()
 {
-    // TODO(skeleton): stop UT worker thread and shut down control plane.
+    LOGF_INFO("%s: destroying AIDL service instance", logPrefix);
+
+    m_stopUtWorker = true;
+    if (m_utWorkerThread.joinable())
+    {
+        m_utWorkerThread.join();
+    }
+
+    // Control-plane shutdown is intentionally not invoked here because the
+    // control-plane path is not initialized in this implementation pass.
 }
 
-void ThermalSensor::setConfigurationPath(const std::string& configurationPath)
+void ThermalSensor::initializeSensors(vcomponent::utility::ThermalHfpConfig configuration)
 {
-    std::lock_guard<std::mutex> lock(g_configurationPathMutex);
-    g_configurationPath = configurationPath.empty() ? defaultConfigPath : configurationPath;
-}
+    std::vector<SensorRuntime> sensors;
+    sensors.reserve(configuration.sensors.size());
 
-bool ThermalSensor::loadConfiguration(const std::string& configurationPath)
-{
-    // TODO(skeleton): consume the startup-selected profile by loading its
-    // parsed model into m_sensors and deriving m_currentState. This method is
-    // not currently called because startup validation occurs in main().
-    (void)configurationPath;
-    return false;
+    const std::int64_t timestampMs = vcomponent::utility::monotonicTimestampMs();
+    for (const auto& sensorConfig : configuration.sensors)
+    {
+        SensorRuntime runtime{};
+        runtime.config = sensorConfig;
+        runtime.state = State::NORMAL;
+        runtime.reading = makeReadingFromConfig(
+            sensorConfig,
+            initialTemperatureForSensor(sensorConfig),
+            timestampMs);
+
+        sensors.push_back(runtime);
+
+        LOGF_DEBUG(
+            "%s: configured sensor id=%s name=%s location=%s vendorCode=%d",
+            logPrefix,
+            sensorConfig.id.c_str(),
+            sensorConfig.sensorName.c_str(),
+            sensorConfig.location.c_str(),
+            static_cast<int>(sensorConfig.vendor.vendorCode));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_sensors = std::move(sensors);
+        m_currentState = State::NORMAL;
+    }
+
+    LOGF_INFO(
+        "%s: loaded %zu configured thermal sensor(s); aggregate state=%s",
+        logPrefix,
+        configuration.sensors.size(),
+        toString(State::NORMAL).c_str());
 }
 
 void ThermalSensor::utWorkerLoop()
 {
-    // TODO(skeleton): drain m_ut.getMessage() and dispatch to handleQueuedUtMessage().
+    // Control-plane processing is intentionally excluded from this pass.
+    LOGF_DEBUG("%s: UT worker loop is disabled; control-plane work is excluded", logPrefix);
 }
 
 void ThermalSensor::handleQueuedUtMessage(const std::tuple<std::string, std::string, void*>& msg)
 {
-    // TODO(skeleton): parse the KVP payload and handle the `set_temperature` command.
+    // Control-plane message parsing is intentionally excluded from this pass.
     (void)msg;
+    LOGF_DEBUG("%s: queued UT message ignored; control-plane work is excluded", logPrefix);
 }
 
 State ThermalSensor::evaluateSensorState(const SensorRuntime& runtime, double temperatureCelsius) const
 {
-    // TODO(skeleton): compare temperatureCelsius against runtime.config.triggers.
-    (void)runtime;
-    (void)temperatureCelsius;
+    const auto& triggers = runtime.config.triggers;
+
+    if (temperatureCelsius >= triggers.enteringCriticalShutdownCelsius)
+    {
+        return State::CRITICAL_SHUTDOWN_IMMINENT;
+    }
+
+    if (temperatureCelsius >= triggers.criticalTemperatureExceededCelsius)
+    {
+        return State::CRITICAL_TEMPERATURE_EXCEEDED;
+    }
+
+    if (runtime.state != State::NORMAL &&
+        temperatureCelsius <= triggers.criticalTemperatureRecoveredCelsius)
+    {
+        return State::CRITICAL_TEMPERATURE_RECOVERED;
+    }
+
     return State::NORMAL;
 }
 
 void ThermalSensor::applyTemperatureSample(const std::string& sensorId, double temperatureCelsius)
 {
-    // TODO(skeleton): update the sensor reading, recompute aggregated state and notify listeners.
-    (void)sensorId;
-    (void)temperatureCelsius;
+    LOGF_INFO(
+        "%s: applying temperature sample sensorId=%s temperatureCelsius=%.3f",
+        logPrefix,
+        sensorId.c_str(),
+        temperatureCelsius);
+
+    ActionEvent event{};
+    bool shouldNotify = false;
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        auto it = std::find_if(
+            m_sensors.begin(),
+            m_sensors.end(),
+            [&](const SensorRuntime& runtime) {
+                return runtime.config.id == sensorId;
+            });
+
+        if (it == m_sensors.end())
+        {
+            LOGF_WARN(
+                "%s: ignoring temperature sample for unknown sensorId=%s",
+                logPrefix,
+                sensorId.c_str());
+            return;
+        }
+
+        const std::int64_t timestampMs = vcomponent::utility::monotonicTimestampMs();
+        it->reading = makeReadingFromConfig(it->config, temperatureCelsius, timestampMs);
+        it->state = evaluateSensorState(*it, temperatureCelsius);
+
+        State aggregateState = State::NORMAL;
+        for (const auto& runtime : m_sensors)
+        {
+            aggregateState = moreSevere(aggregateState, runtime.state);
+        }
+
+        LOGF_DEBUG(
+            "%s: sample evaluated sensorId=%s sensorState=%s aggregateState=%s previousAggregateState=%s",
+            logPrefix,
+            sensorId.c_str(),
+            toString(it->state).c_str(),
+            toString(aggregateState).c_str(),
+            toString(m_currentState).c_str());
+
+        if (aggregateState != m_currentState)
+        {
+            m_currentState = aggregateState;
+
+            event.state = aggregateState;
+            event.timestampMonotonicMs = timestampMs;
+            event.temperatureReading = it->reading;
+            shouldNotify = true;
+        }
+    }
+
+    if (shouldNotify)
+    {
+        LOGF_INFO(
+            "%s: aggregate state changed to %s; notifying listeners",
+            logPrefix,
+            toString(event.state).c_str());
+        notifyListeners(event);
+    }
 }
 
 void ThermalSensor::notifyListeners(const ActionEvent& event)
 {
-    // TODO(skeleton): dispatch onThermalStateChange() to all registered listeners.
-    (void)event;
+    std::vector<android::sp<IThermalEventListener>> listeners;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        listeners = m_listeners;
+    }
+
+    LOGF_INFO(
+        "%s: dispatching onThermalStateChange state=%s listenerCount=%zu",
+        logPrefix,
+        toString(event.state).c_str(),
+        listeners.size());
+
+    for (const auto& listener : listeners)
+    {
+        if (!listener.get())
+        {
+            LOGF_WARN("%s: skipped null listener during notification", logPrefix);
+            continue;
+        }
+
+        const android::binder::Status status = listener->onThermalStateChange(event);
+        if (!status.isOk())
+        {
+            LOGF_WARN(
+                "%s: listener notification failed for state=%s",
+                logPrefix,
+                toString(event.state).c_str());
+        }
+    }
 }
 
 android::binder::Status ThermalSensor::registerEventListener(
     const android::sp<IThermalEventListener>& listener,
     bool* _aidl_return)
 {
+    LOGF_INFO("%s: registerEventListener called", logPrefix);
+
     if (_aidl_return)
         *_aidl_return = false;
 
     if (!listener.get())
     {
+        LOGF_WARN("%s: registerEventListener rejected null listener", logPrefix);
         return android::binder::Status::fromExceptionCode(android::binder::Status::EX_NULL_POINTER);
     }
 
@@ -157,6 +343,11 @@ android::binder::Status ThermalSensor::registerEventListener(
         {
             if (_aidl_return)
                 *_aidl_return = false; // already registered
+
+            LOGF_DEBUG(
+                "%s: registerEventListener duplicate ignored listenerCount=%zu",
+                logPrefix,
+                m_listeners.size());
             return android::binder::Status::ok();
         }
     }
@@ -166,6 +357,11 @@ android::binder::Status ThermalSensor::registerEventListener(
     if (_aidl_return)
         *_aidl_return = true; // newly registered
 
+    LOGF_INFO(
+        "%s: registerEventListener registered listenerCount=%zu",
+        logPrefix,
+        m_listeners.size());
+
     return android::binder::Status::ok();
 }
 
@@ -173,11 +369,14 @@ android::binder::Status ThermalSensor::unregisterEventListener(
     const android::sp<IThermalEventListener>& listener,
     bool* _aidl_return)
 {
+    LOGF_INFO("%s: unregisterEventListener called", logPrefix);
+
     if (_aidl_return)
         *_aidl_return = false;
 
     if (!listener.get())
     {
+        LOGF_WARN("%s: unregisterEventListener rejected null listener", logPrefix);
         return android::binder::Status::fromExceptionCode(android::binder::Status::EX_NULL_POINTER);
     }
 
@@ -199,45 +398,61 @@ android::binder::Status ThermalSensor::unregisterEventListener(
     if (_aidl_return)
         *_aidl_return = removed;
 
+    LOGF_INFO(
+        "%s: unregisterEventListener removed=%s listenerCount=%zu",
+        logPrefix,
+        removed ? "true" : "false",
+        m_listeners.size());
+
     return android::binder::Status::ok();
 }
 
 android::binder::Status ThermalSensor::getCurrentThermalState(State* _aidl_return)
 {
+    LOGF_INFO("%s: getCurrentThermalState called", logPrefix);
+
     if (_aidl_return == nullptr)
     {
+        LOGF_WARN("%s: getCurrentThermalState rejected null return pointer", logPrefix);
         return android::binder::Status::fromExceptionCode(android::binder::Status::EX_NULL_POINTER);
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
     *_aidl_return = m_currentState;
+
+    LOGF_DEBUG(
+        "%s: getCurrentThermalState returning %s",
+        logPrefix,
+        toString(m_currentState).c_str());
+
     return android::binder::Status::ok();
 }
 
 android::binder::Status ThermalSensor::getCurrentTemperatures(
     std::vector<TemperatureReading>* _aidl_return)
 {
+    LOGF_INFO("%s: getCurrentTemperatures called", logPrefix);
+
     if (_aidl_return == nullptr)
     {
+        LOGF_WARN("%s: getCurrentTemperatures rejected null return pointer", logPrefix);
         return android::binder::Status::fromExceptionCode(android::binder::Status::EX_NULL_POINTER);
     }
 
+    std::lock_guard<std::mutex> lock(m_mutex);
+
     _aidl_return->clear();
+    _aidl_return->reserve(m_sensors.size());
 
-    // Minimal deterministic telemetry record.
-    TemperatureReading r{};
-    r.sensorName = android::String16("Stub Sensor");
-    r.location   = android::String16("SoC");
-    r.temperatureCelsius = 42.0;
+    for (const auto& runtime : m_sensors)
+    {
+        _aidl_return->push_back(runtime.reading);
+    }
 
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-    r.timestampMonotonicMs = (ms < 0) ? 0 : ms;
-
-    r.vendorCode = 0;
-    r.vendorInfo = android::String16("skeleton");
-
-    _aidl_return->push_back(r);
+    LOGF_DEBUG(
+        "%s: getCurrentTemperatures returning %zu reading(s)",
+        logPrefix,
+        _aidl_return->size());
 
     return android::binder::Status::ok();
 }

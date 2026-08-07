@@ -21,14 +21,16 @@
 
 /**
  * @file vcomponent_ThermalSensor.h
- * @brief SKELETON AIDL binder service declaration for the thermal policy service.
+ * @brief AIDL Binder service declaration for the thermal policy service.
  *
- * Implemented AIDL interface (declaration only in this skeleton):
+ * Implemented AIDL interface:
  *   com.rdk.hal.sensor.thermal.IThermalSensor  (singleton, serviceName "sensor.thermal")
  *
- * This header declares the full surface expected by the build skeleton. The
- * corresponding source file (src/aidl/vcomponent_ThermalSensor.cpp) contains
- * placeholder bodies only; no thermal policy behaviour is implemented.
+ * The service exposes listener registration, current aggregate thermal state,
+ * and current temperature telemetry as defined by the thermal sensor AIDL
+ * contract. Runtime sensor records are initialized from the selected HFP YAML
+ * profile; external UT/control-plane orchestration is intentionally not wired
+ * in this implementation pass.
  */
 
 #include <com/rdk/hal/sensor/thermal/ActionEvent.h>
@@ -63,7 +65,7 @@ namespace thermal
 {
 
 /**
- * @brief Skeleton thermal policy service driven by the HFP profile and UT control plane.
+ * @brief Thermal policy service driven by configured HFP sensor metadata.
  */
 class ThermalSensor final : public android::BinderService<ThermalSensor>, public BnThermalSensor
 {
@@ -84,12 +86,15 @@ public:
 
     // PUBLIC_INTERFACE
     /**
-     * @brief Construct the service. Skeleton: no thermal state is initialized.
+     * @brief Construct the service from a validated HFP thermal profile.
+     *
+     * @param[in] configuration Parsed thermal sensor configuration, supplied
+     *                           by the service entrypoint at startup.
      */
-    ThermalSensor();
+    explicit ThermalSensor(vcomponent::utility::ThermalHfpConfig configuration);
 
     /**
-     * @brief Destroy the service and release skeleton resources.
+     * @brief Destroy the service and release runtime resources.
      */
     ~ThermalSensor() override;
 
@@ -98,17 +103,10 @@ public:
 
     // PUBLIC_INTERFACE
     /**
-     * @brief Configure the HFP YAML path used when the service is constructed.
-     *
-     * The service entry point calls this before publishing the Binder service.
-     *
-     * @param[in] configurationPath Path to hfp-sensor-thermal.yaml.
-     */
-    static void setConfigurationPath(const std::string& configurationPath);
-
-    // PUBLIC_INTERFACE
-    /**
      * @brief Register a thermal event listener.
+     *
+     * A null listener fails with Binder EX_NULL_POINTER. A duplicate listener is
+     * not added and returns false. A newly registered listener returns true.
      *
      * @param[in]  listener      Listener to register.
      * @param[out] _aidl_return  Set to true when newly registered.
@@ -122,6 +120,9 @@ public:
     // PUBLIC_INTERFACE
     /**
      * @brief Unregister a previously registered thermal event listener.
+     *
+     * A null listener fails with Binder EX_NULL_POINTER. An unknown listener
+     * returns false. A removed listener returns true.
      *
      * @param[in]  listener      Listener to unregister.
      * @param[out] _aidl_return  Set to true when a listener was removed.
@@ -146,6 +147,9 @@ public:
     /**
      * @brief Get the latest temperature reading for each configured sensor.
      *
+     * Returns an empty vector when no sensor telemetry is configured or
+     * available, matching the AIDL contract.
+     *
      * @param[out] _aidl_return  Receives the temperature readings.
      *
      * @return Binder status.
@@ -163,20 +167,55 @@ private:
         State state{State::NORMAL};
     };
 
-    bool loadConfiguration(const std::string& configurationPath);
+    /**
+     * @brief Initialize configured sensors into runtime records.
+     *
+     * @param[in] configuration Validated HFP profile supplied at startup.
+     */
+    void initializeSensors(vcomponent::utility::ThermalHfpConfig configuration);
 
+    /**
+     * @brief Reserved UT worker hook.
+     *
+     * Control-plane behavior is intentionally excluded from this pass.
+     */
     void utWorkerLoop();
+
+    /**
+     * @brief Reserved UT message handler hook.
+     *
+     * Control-plane behavior is intentionally excluded from this pass.
+     *
+     * @param[in] msg Queued UT message tuple.
+     */
     void handleQueuedUtMessage(const std::tuple<std::string, std::string, void*>& msg);
 
     /**
-     * @brief Apply a simulated temperature sample and evaluate the thermal policy.
+     * @brief Apply a temperature sample and evaluate the aggregate policy state.
      *
      * @param[in] sensorId           Configured sensor id (e.g. "soc_die").
      * @param[in] temperatureCelsius Sampled temperature in degrees Celsius.
      */
     void applyTemperatureSample(const std::string& sensorId, double temperatureCelsius);
 
+    /**
+     * @brief Evaluate the AIDL State represented by one sensor sample.
+     *
+     * @param[in] runtime            Runtime record for the configured sensor.
+     * @param[in] temperatureCelsius Sampled temperature in degrees Celsius.
+     *
+     * @return Evaluated high-level thermal state.
+     */
     State evaluateSensorState(const SensorRuntime& runtime, double temperatureCelsius) const;
+
+    /**
+     * @brief Notify registered listeners of a state transition.
+     *
+     * Listener callbacks are invoked outside the service mutex to avoid holding
+     * shared service state while making Binder calls.
+     *
+     * @param[in] event ActionEvent payload for IThermalEventListener callbacks.
+     */
     void notifyListeners(const ActionEvent& event);
 
     mutable std::mutex m_mutex;
@@ -189,6 +228,7 @@ private:
     std::thread m_utWorkerThread;
 
     // UT control plane owned by the service (single instance, service lifetime).
+    // It is intentionally not initialized until control-plane work is requested.
     vcomponent::thermal::controller::ThermalUtController m_ut;
 };
 

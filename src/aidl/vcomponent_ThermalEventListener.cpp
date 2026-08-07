@@ -19,10 +19,10 @@
 
 /**
  * @file vcomponent_ThermalEventListener.cpp
- * @brief SKELETON implementation of the thermal event listener AIDL callback.
+ * @brief Implementation of the thermal event listener AIDL callback.
  *
- * The callback body is a placeholder so the skeleton links; no event handling
- * behaviour is implemented.
+ * The listener acknowledges asynchronous onThermalStateChange callbacks and
+ * logs ActionEvent details for debugging and integration verification.
  */
 
 #include "aidl/vcomponent_ThermalEventListener.h"
@@ -42,14 +42,29 @@ namespace thermal
 
 namespace
 {
-constexpr const char* componentName = "ThermalEventListener";
+constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalEventListener>";
 } // namespace
 
 android::binder::Status ThermalEventListener::onThermalStateChange(const ActionEvent& event)
 {
-    // TODO(skeleton): log/forward the received thermal state change event.
-    (void)event;
-    LOGF_INFO("%s: onThermalStateChange (skeleton, no behaviour implemented)", componentName);
+    LOGF_INFO(
+        "%s: onThermalStateChange received state=%s timestampMonotonicMs=%lld hasTemperatureReading=%s",
+        logPrefix,
+        toString(event.state).c_str(),
+        static_cast<long long>(event.timestampMonotonicMs),
+        event.temperatureReading.has_value() ? "true" : "false");
+
+    if (event.temperatureReading.has_value())
+    {
+        const TemperatureReading& reading = event.temperatureReading.value();
+        LOGF_DEBUG(
+            "%s: event reading temperatureCelsius=%.3f timestampMonotonicMs=%lld vendorCode=%d",
+            logPrefix,
+            reading.temperatureCelsius,
+            static_cast<long long>(reading.timestampMonotonicMs),
+            static_cast<int>(reading.vendorCode));
+    }
+
     return android::binder::Status::ok();
 }
 
