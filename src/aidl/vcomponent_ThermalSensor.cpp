@@ -73,6 +73,12 @@ int stateSeverity(State state)
     }
 }
 
+bool isActiveCriticalTemperatureState(State state)
+{
+    return state == State::CRITICAL_TEMPERATURE_EXCEEDED ||
+           state == State::CRITICAL_SHUTDOWN_IMMINENT;
+}
+
 State moreSevere(State left, State right)
 {
     return (stateSeverity(right) > stateSeverity(left)) ? right : left;
@@ -208,10 +214,18 @@ State ThermalSensor::evaluateSensorState(const SensorRuntime& runtime, double te
         return State::CRITICAL_TEMPERATURE_EXCEEDED;
     }
 
-    if (runtime.state != State::NORMAL &&
-        temperatureCelsius <= triggers.criticalTemperatureRecoveredCelsius)
+    if (isActiveCriticalTemperatureState(runtime.state))
     {
-        return State::CRITICAL_TEMPERATURE_RECOVERED;
+        if (temperatureCelsius <= triggers.criticalTemperatureRecoveredCelsius)
+        {
+            return State::CRITICAL_TEMPERATURE_RECOVERED;
+        }
+
+        // Keep reporting a critical state while cooling through the hysteresis
+        // band between the recovery and exceeded thresholds. This prevents a
+        // premature NORMAL transition before the configured recovery point is
+        // reached.
+        return State::CRITICAL_TEMPERATURE_EXCEEDED;
     }
 
     return State::NORMAL;
