@@ -65,7 +65,7 @@ endif()
 # Optional version (fallback)
 # ----------------------
 if(NOT DEFINED VCOMPONENT_VERSION)
-  set(VCOMPONENT_VERSION "0.1.0.0")
+  set(VCOMPONENT_VERSION "0.2.0.0")
   message(WARNING "VCOMPONENT_VERSION not set. Using default: ${VCOMPONENT_VERSION}")
 endif()
 
