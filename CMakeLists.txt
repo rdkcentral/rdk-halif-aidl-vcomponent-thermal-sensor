@@ -69,6 +69,11 @@ if(NOT DEFINED VCOMPONENT_VERSION)
   message(WARNING "VCOMPONENT_VERSION not set. Using default: ${VCOMPONENT_VERSION}")
 endif()
 
+if(NOT DEFINED BOOTREASON_VERSION)
+  set(BOOTREASON_VERSION "0.1.0.0")
+  message(WARNING "BOOTREASON_VERSION not set. Using default: ${BOOTREASON_VERSION}")
+endif()
+
 # ----------------------
 # Detect environment
 # ----------------------
@@ -88,18 +93,21 @@ if(USE_SYSROOT)
     set(EXTRA_INCLUDE
         "${CMAKE_SYSROOT}/usr/include"
         "${CMAKE_SYSROOT}/usr/include/vendor/sensor/${VCOMPONENT_VERSION}/include"
+        "${CMAKE_SYSROOT}/usr/include/vendor/bootreason/${BOOTREASON_VERSION}/include"
         "${CMAKE_SYSROOT}/usr/include/vendor/common/${VCOMPONENT_INCLUDE_VERSION}/include")
 else()
     if(NOT DEFINED HALIF_INCLUDE_DIR OR
        NOT DEFINED BINDER_SDK_DIR OR
        NOT DEFINED BINDER_SDK_INCLUDE_DIR OR
-       NOT DEFINED THERMAL_HALIF_INCLUDE_DIR)
+       NOT DEFINED THERMAL_HALIF_INCLUDE_DIR OR
+       NOT DEFINED BOOTREASON_HALIF_INCLUDE_DIR)
         message(FATAL_ERROR "HALIF/BINDER env not set. Use build.sh or sysroot")
     endif()
 
     set(AIDL_INCLUDE_DIR ${THERMAL_HALIF_INCLUDE_DIR})
     set(EXTRA_INCLUDE
         ${HALIF_INCLUDE_DIR}
+        ${BOOTREASON_HALIF_INCLUDE_DIR}
         ${BINDER_SDK_INCLUDE_DIR}
     )
 endif()
@@ -107,6 +115,7 @@ endif()
 message(STATUS "==== BUILD CONFIG ====")
 message(STATUS "MODE = ${USE_SYSROOT}")
 message(STATUS "VCOMPONENT_VERSION = ${VCOMPONENT_VERSION}")
+message(STATUS "BOOTREASON_VERSION = ${BOOTREASON_VERSION}")
 message(STATUS "======================")
 
 # ----------------------
@@ -189,6 +198,49 @@ add_library(thermal_hal SHARED IMPORTED)
 set_target_properties(thermal_hal PROPERTIES IMPORTED_LOCATION "${THERMAL_HAL_LIB}")
 
 # ----------------------
+# BootReason HAL library
+# ----------------------
+if(USE_SYSROOT)
+    find_library(BOOTREASON_HAL_LIB
+    NAMES
+        bootreason-v${BOOTREASON_VERSION}-cpp
+        bootreason-vcurrent-cpp
+        bootreason
+    HINTS
+        "${CMAKE_SYSROOT}/usr/lib/vendor/rdk-halif-aidl"
+    )
+    if(NOT BOOTREASON_HAL_LIB)
+        message(FATAL_ERROR "BootReason HALIF lib not found in sysroot")
+    endif()
+else()
+    if(NOT DEFINED HALIF_LIB_DIR)
+        message(FATAL_ERROR "HALIF_LIB_DIR not set")
+    endif()
+
+    file(GLOB BOOTREASON_HAL_LIB
+        "${HALIF_LIB_DIR}/libbootreason*-cpp.so"
+        "${HALIF_LIB_DIR}/libbootreason*.so"
+        "${HALIF_LIB_DIR}/*bootreason*-cpp.so"
+        "${HALIF_LIB_DIR}/*bootreason*.so"
+    )
+    list(LENGTH BOOTREASON_HAL_LIB _BOOT_HAL_LIB_COUNT)
+    if(_BOOT_HAL_LIB_COUNT EQUAL 0)
+        message(FATAL_ERROR "BootReason HALIF lib not found in ${HALIF_LIB_DIR}")
+    endif()
+
+    list(SORT BOOTREASON_HAL_LIB)
+    math(EXPR _BOOT_HAL_LIB_LAST "${_BOOT_HAL_LIB_COUNT} - 1")
+    list(GET BOOTREASON_HAL_LIB ${_BOOT_HAL_LIB_LAST} BOOTREASON_HAL_LIB)
+
+    if(NOT EXISTS "${BOOTREASON_HAL_LIB}")
+        message(FATAL_ERROR "BootReason HALIF lib not found in ${HALIF_LIB_DIR}")
+    endif()
+endif()
+
+add_library(bootreason_hal SHARED IMPORTED)
+set_target_properties(bootreason_hal PROPERTIES IMPORTED_LOCATION "${BOOTREASON_HAL_LIB}")
+
+# ----------------------
 # UT Control
 # ----------------------
 find_library(UTCONTROL_LIB
@@ -254,6 +306,10 @@ target_include_directories(thermal_core PRIVATE
 
 target_link_libraries(thermal_core PUBLIC
     thermal_hal
+    bootreason_hal
+    binder
+    utils
+    log
     ut_control
 )
 

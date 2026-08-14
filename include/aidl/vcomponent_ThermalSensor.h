@@ -29,8 +29,10 @@
  * The service exposes listener registration, current aggregate thermal state,
  * and current temperature telemetry as defined by the thermal sensor AIDL
  * contract. Runtime sensor records are initialized from the selected HFP YAML
- * profile; external UT/control-plane orchestration is intentionally not wired
- * in this implementation pass.
+ * profile. The UT control plane listens for IThermalSensor temperature_update
+ * messages, updates in-memory telemetry, notifies listeners on aggregate state
+ * transitions, and requests a BootReason software reboot when the aggregate
+ * policy enters CRITICAL_SHUTDOWN_IMMINENT.
  */
 
 #include <com/rdk/hal/sensor/thermal/ActionEvent.h>
@@ -47,10 +49,10 @@
 #include "utility/vcomponent_ThermalHfpConfigUtils.h"
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <tuple>
 #include <vector>
 
 namespace com
@@ -90,9 +92,12 @@ public:
      *
      * @param[in] configuration Parsed thermal sensor configuration, supplied
      *                           by the service entrypoint at startup.
+     * @param[in] controlPort   UT control-plane TCP port for IThermalSensor
+     *                           temperature_update messages.
      */
-    explicit ThermalSensor(vcomponent::utility::ThermalHfpConfig configuration);
+    ThermalSensor(vcomponent::utility::ThermalHfpConfig configuration, std::uint16_t controlPort);
 
+    // PUBLIC_INTERFACE
     /**
      * @brief Destroy the service and release runtime resources.
      */
@@ -175,28 +180,32 @@ private:
     void initializeSensors(vcomponent::utility::ThermalHfpConfig configuration);
 
     /**
-     * @brief Reserved UT worker hook.
+     * @brief Poll the UT control-plane queue and apply thermal updates.
      *
-     * Control-plane behavior is intentionally excluded from this pass.
+     * The worker consumes temperature_update commands and delegates all policy
+     * evaluation to applyTemperatureSample(). Reboot escalation is requested
+     * from the state-transition path after listener notification.
      */
     void utWorkerLoop();
 
     /**
-     * @brief Reserved UT message handler hook.
+     * @brief Handle a parsed control-plane temperature_update command.
      *
-     * Control-plane behavior is intentionally excluded from this pass.
-     *
-     * @param[in] msg Queued UT message tuple.
+     * @param[in] update Parsed IThermalSensor temperature_update payload.
      */
-    void handleQueuedUtMessage(const std::tuple<std::string, std::string, void*>& msg);
+    void handleControlPlaneUpdate(const vcomponent::thermal::controller::ThermalTemperatureUpdate& update);
 
     /**
      * @brief Apply a temperature sample and evaluate the aggregate policy state.
      *
-     * @param[in] sensorId           Configured sensor id (e.g. "soc_die").
-     * @param[in] temperatureCelsius Sampled temperature in degrees Celsius.
+     * @param[in] sensorNameOrId       Configured sensorName or id.
+     * @param[in] temperatureCelsius   Sampled temperature in degrees Celsius.
+     * @param[in] timestampMonotonicMs Monotonic timestamp supplied by control plane.
      */
-    void applyTemperatureSample(const std::string& sensorId, double temperatureCelsius);
+    void applyTemperatureSample(
+        const std::string& sensorNameOrId,
+        double temperatureCelsius,
+        std::int64_t timestampMonotonicMs);
 
     /**
      * @brief Evaluate the AIDL State represented by one sensor sample.
@@ -218,17 +227,45 @@ private:
      */
     void notifyListeners(const ActionEvent& event);
 
+    /**
+     * @brief Request a thermal software reboot once for the current shutdown event.
+     *
+     * Duplicate CRITICAL_SHUTDOWN_IMMINENT transitions are suppressed so the
+     * BootReason service receives at most one reboot request for this service
+     * lifetime.
+     *
+     * @param[in] reasonString Stable BootReason string persisted for diagnosis.
+     */
+    void scheduleThermalReboot(const std::string& reasonString);
+
+    /**
+     * @brief Request a thermal software reboot through the BootReason service.
+     *
+     * The helper obtains the published IBootReason Binder service, records
+     * BootCause::THERMAL_RESET, then requests ResetType::SOFTWARE_REBOOT using
+     * the same bounded non-empty reason string. It performs no thermal state
+     * mutation and must be called outside m_mutex because Binder calls can block.
+     *
+     * @param[in] reasonString Stable BootReason string persisted for diagnosis.
+     */
+    void requestThermalReboot(const std::string& reasonString);
+
     mutable std::mutex m_mutex;
 
     std::vector<SensorRuntime> m_sensors;
     State m_currentState{State::NORMAL};
     std::vector<android::sp<IThermalEventListener>> m_listeners;
 
+    std::uint16_t m_controlPort{0};
     std::atomic<bool> m_stopUtWorker{false};
     std::thread m_utWorkerThread;
 
-    // UT control plane owned by the service (single instance, service lifetime).
-    // It is intentionally not initialized until control-plane work is requested.
+    std::atomic<bool> m_rebootScheduled{false};
+
+    // UT control plane owned by the service for IThermalSensor temperature_update
+    // messages. Samples entering CRITICAL_SHUTDOWN_IMMINENT flow through the
+    // normal policy path, notify listeners, then request a BootReason reboot
+    // without any intentional delay.
     vcomponent::thermal::controller::ThermalUtController m_ut;
 };
 
