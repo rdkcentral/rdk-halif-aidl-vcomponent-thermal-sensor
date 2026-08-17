@@ -190,10 +190,10 @@ void vcomponent::thermal::service::printUsage(const char* progName)
               static_cast<unsigned>(vcomponent::thermal::service::kDefaultControlPlanePort));
     LOGF_INFO("%s", logPrefix);
     LOGF_INFO("%s Control-plane protocol:", logPrefix);
-    LOGF_INFO("%s   IThermalSensor.command=temperature_update", logPrefix);
-    LOGF_INFO("%s   IThermalSensor.sensorName=<configured sensorName or id>", logPrefix);
-    LOGF_INFO("%s   IThermalSensor.temperatureCelsius=<double>", logPrefix);
-    LOGF_INFO("%s   IThermalSensor.timestampMonotonicMs=<int64>", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/command=temperature_update", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/sensorName=<configured sensorName or id>", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/temperatureCelsius=<double>", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/timestampMonotonicMs=<int64>", logPrefix);
 }
 
 int main(int argc, char** argv)
