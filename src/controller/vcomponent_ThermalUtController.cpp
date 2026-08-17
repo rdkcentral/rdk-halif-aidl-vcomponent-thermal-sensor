@@ -33,8 +33,8 @@
 #include "utility/vcomponent_ThermalHelper.h"
 #include "utility/vcomponent_ThermalParseConfig.h"
 
-#include <chrono>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -75,7 +75,8 @@ bool parseDouble(const std::string& value, double* outValue)
     errno = 0;
     char* endPtr = nullptr;
     const double parsed = std::strtod(value.c_str(), &endPtr);
-    if (errno != 0 || endPtr == value.c_str() || (endPtr != nullptr && *endPtr != '\0'))
+    if (errno != 0 || endPtr == value.c_str() || (endPtr != nullptr && *endPtr != '\0') ||
+        !std::isfinite(parsed))
     {
         return false;
     }
@@ -194,13 +195,16 @@ bool ThermalUtController::buildInventory(std::string* outInventory, std::string*
 
 bool ThermalUtController::init(std::uint16_t port, void* userData)
 {
-    if (m_controlPlaneInstance != nullptr)
     {
-        LOGF_WARN(
-            "%s control plane already initialized; ignoring duplicate init request (port=%u)",
-            logPrefix,
-            static_cast<unsigned>(port));
-        return true;
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        if (m_controlPlaneInstance != nullptr)
+        {
+            LOGF_WARN(
+                "%s control plane already initialized; ignoring duplicate init request (port=%u)",
+                logPrefix,
+                static_cast<unsigned>(port));
+            return true;
+        }
     }
 
     if (port == 0U)
@@ -209,25 +213,39 @@ bool ThermalUtController::init(std::uint16_t port, void* userData)
         return false;
     }
 
-    m_userData = userData;
-    m_controlPlaneInstance = UT_ControlPlane_Init(static_cast<int>(port));
-    if (m_controlPlaneInstance == nullptr)
+    ut_controlPlane_instance_t* controlPlaneInstance = UT_ControlPlane_Init(static_cast<int>(port));
+    if (controlPlaneInstance == nullptr)
     {
         LOGF_ERROR(
             "%s failed to create UT control-plane instance on port %u",
             logPrefix,
             static_cast<unsigned>(port));
-        m_userData = nullptr;
         return false;
     }
 
     UT_ControlPlane_RegisterCallbackOnMessage(
-        m_controlPlaneInstance,
+        controlPlaneInstance,
         const_cast<char*>(kCommandKeySlash),
         &ThermalUtController::messageCallback,
         this);
 
-    UT_ControlPlane_Start(m_controlPlaneInstance);
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        if (m_controlPlaneInstance != nullptr)
+        {
+            LOGF_WARN(
+                "%s control plane initialized concurrently; releasing duplicate instance",
+                logPrefix);
+            UT_ControlPlane_Exit(controlPlaneInstance);
+            return true;
+        }
+
+        m_controlPlaneInstance = controlPlaneInstance;
+        m_userData = userData;
+        m_acceptingCallbacks = true;
+    }
+
+    UT_ControlPlane_Start(controlPlaneInstance);
 
     LOGF_INFO(
         "%s IThermalSensor control plane started on port %u",
@@ -238,20 +256,32 @@ bool ThermalUtController::init(std::uint16_t port, void* userData)
 
 void ThermalUtController::shutdown()
 {
-    if (m_controlPlaneInstance == nullptr)
+    ut_controlPlane_instance_t* controlPlaneInstance = nullptr;
+    {
+        std::unique_lock<std::mutex> lock(m_lifecycleMutex);
+        if (m_controlPlaneInstance == nullptr)
+        {
+            return;
+        }
+
+        m_acceptingCallbacks = false;
+        m_callbacksDrained.wait(lock, [this] { return m_activeCallbacks == 0U; });
+        controlPlaneInstance = m_controlPlaneInstance;
+        m_controlPlaneInstance = nullptr;
+        m_userData = nullptr;
+    }
+
+    if (controlPlaneInstance == nullptr)
     {
         return;
     }
 
     LOGF_INFO("%s stopping IThermalSensor control plane", logPrefix);
-    UT_ControlPlane_Exit(m_controlPlaneInstance);
-    m_controlPlaneInstance = nullptr;
-    m_userData = nullptr;
+    UT_ControlPlane_Exit(controlPlaneInstance);
 
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
-        std::queue<ThermalTemperatureUpdate> emptyQueue;
-        m_temperatureUpdateQueue.swap(emptyQueue);
+        m_pendingTemperatureUpdates.clear();
     }
 
     LOGF_INFO("%s IThermalSensor control plane stopped and pending messages drained", logPrefix);
@@ -260,19 +290,20 @@ void ThermalUtController::shutdown()
 std::optional<ThermalTemperatureUpdate> ThermalUtController::getTemperatureUpdate()
 {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    if (m_temperatureUpdateQueue.empty())
+    if (m_pendingTemperatureUpdates.empty())
     {
         return std::nullopt;
     }
 
-    ThermalTemperatureUpdate update = m_temperatureUpdateQueue.front();
-    m_temperatureUpdateQueue.pop();
-
+    auto updateIt = m_pendingTemperatureUpdates.begin();
+    ThermalTemperatureUpdate update = std::move(updateIt->second);
+    m_pendingTemperatureUpdates.erase(updateIt);
     return update;
 }
 
 bool ThermalUtController::isRunning() const
 {
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
     return m_controlPlaneInstance != nullptr;
 }
 
@@ -285,7 +316,26 @@ void ThermalUtController::messageCallback(char* key, ut_kvp_instance_t* instance
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(controller->m_lifecycleMutex);
+        if (!controller->m_acceptingCallbacks)
+        {
+            return;
+        }
+
+        ++controller->m_activeCallbacks;
+    }
+
     controller->pushMessage(key, instance);
+
+    {
+        std::lock_guard<std::mutex> lock(controller->m_lifecycleMutex);
+        --controller->m_activeCallbacks;
+        if (controller->m_activeCallbacks == 0U)
+        {
+            controller->m_callbacksDrained.notify_all();
+        }
+    }
 }
 
 void ThermalUtController::pushMessage(char* key, ut_kvp_instance_t* instance)
@@ -307,7 +357,6 @@ void ThermalUtController::pushMessage(char* key, ut_kvp_instance_t* instance)
     }
 
     command = vcomponent::utility::trim(command);
-
     if (command != kCommandTemperatureUpdate)
     {
         return;
@@ -322,6 +371,7 @@ void ThermalUtController::pushMessage(char* key, ut_kvp_instance_t* instance)
             kSensorNameKeySlash);
         return;
     }
+
     update.sensorName = vcomponent::utility::trim(update.sensorName);
     if (update.sensorName.empty())
     {
@@ -350,17 +400,17 @@ void ThermalUtController::pushMessage(char* key, ut_kvp_instance_t* instance)
             kTimestampKeySlash);
         return;
     }
-    if (update.timestampMonotonicMs == 0)
-    {
-        update.timestampMonotonicMs = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-                .count());
-    }
 
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
-        m_temperatureUpdateQueue.push(update);
+        const auto result = m_pendingTemperatureUpdates.insert_or_assign(update.sensorName, std::move(update));
+        if (!result.second)
+        {
+            LOGF_WARN(
+                "%s temperature_update replaced an older pending sample for sensorName=%s",
+                logPrefix,
+                result.first->first.c_str());
+        }
     }
 }
 

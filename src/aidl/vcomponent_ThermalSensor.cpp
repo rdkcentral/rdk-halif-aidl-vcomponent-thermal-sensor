@@ -45,6 +45,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -326,6 +327,22 @@ void ThermalSensor::applyTemperatureSample(
                 "%s: ignoring temperature_update for unknown sensorNameOrId=%s",
                 logPrefix,
                 sensorNameOrId.c_str());
+            return;
+        }
+
+        const auto& measurableRange = it->config.sensorReadingRangeCelsius;
+        if (!std::isfinite(temperatureCelsius) ||
+            temperatureCelsius < measurableRange.min ||
+            temperatureCelsius > measurableRange.max)
+        {
+            LOGF_WARN(
+                "%s: rejecting out-of-range temperature_update sensorNameOrId=%s "
+                "temperatureCelsius=%.3f measurableRange=[%.3f, %.3f]",
+                logPrefix,
+                sensorNameOrId.c_str(),
+                temperatureCelsius,
+                measurableRange.min,
+                measurableRange.max);
             return;
         }
 

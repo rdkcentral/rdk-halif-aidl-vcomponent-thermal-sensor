@@ -43,10 +43,12 @@
 #include <ut_kvp_profile.h>
 #include <ut_log.h>
 
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <string>
 
 namespace vcomponent
@@ -159,8 +161,17 @@ private:
     ut_controlPlane_instance_t* m_controlPlaneInstance;
     void* m_userData;
 
+    // The control-plane library owns callback dispatch. Coordinate shutdown
+    // with callback entry so it cannot invoke this object after teardown.
+    mutable std::mutex m_lifecycleMutex;
+    std::condition_variable m_callbacksDrained;
+    bool m_acceptingCallbacks{false};
+    std::size_t m_activeCallbacks{0};
+
+    // A single pending sample per sensor bounds memory and ensures that the
+    // service processes the newest telemetry rather than an unbounded backlog.
     mutable std::mutex m_queueMutex;
-    std::queue<ThermalTemperatureUpdate> m_temperatureUpdateQueue;
+    std::map<std::string, ThermalTemperatureUpdate> m_pendingTemperatureUpdates;
 };
 
 } // namespace controller

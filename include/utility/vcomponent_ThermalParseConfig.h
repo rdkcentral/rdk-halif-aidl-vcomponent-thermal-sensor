@@ -63,9 +63,11 @@ void vcomponentkvp_destroy_instance(void* instance);
  * file using ut-core/ut-control KVP APIs. Field names intentionally match the
  * YAML names used by the AIDL specification HFP file. It requires the
  * top-level `sensor.thermal` profile and each sensor `id`, and rejects fields
- * that are present but cannot be converted to their declared numeric types.
- * It does not perform cross-field semantic validation, such as range ordering
- * or trigger-threshold ordering.
+ * that are present but cannot be converted to their declared numeric types. It
+ * also enforces semantic constraints: non-empty unique IDs/names, ordered
+ * measurable and operational ranges, operational-range containment, ordered
+ * trigger thresholds within the measurable range, and non-negative policy
+ * durations.
  *
  * @param[in]  configurationFile    YAML file path. Must not be nullptr.
  * @param[out] thermalConfiguration Output config populated on success.
