@@ -30,10 +30,12 @@
 #include <ut_kvp_profile.h>
 
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <string>
+#include <unordered_set>
 
 namespace vcomponent
 {
@@ -130,7 +132,8 @@ bool parseDouble(const std::string& value, double* outValue)
     errno = 0;
     char* endPtr = nullptr;
     const double parsed = std::strtod(value.c_str(), &endPtr);
-    if (errno != 0 || endPtr == value.c_str() || (endPtr != nullptr && *endPtr != '\0'))
+    if (errno != 0 || endPtr == value.c_str() || (endPtr != nullptr && *endPtr != '\0') ||
+        !std::isfinite(parsed))
     {
         return false;
     }
@@ -213,6 +216,89 @@ bool readRange(
     }
 
     return readDoubleField(instance, prefix + ".max", &outRange->max, outError, false);
+}
+
+bool validateSensorConfiguration(
+    const ThermalSensorConfig& sensorConfig,
+    uint32_t index,
+    std::unordered_set<std::string>* sensorIds,
+    std::unordered_set<std::string>* sensorNames,
+    std::string* outError)
+{
+    if (sensorIds == nullptr || sensorNames == nullptr)
+    {
+        setError(outError, "internal parser error: null uniqueness tracker");
+        return false;
+    }
+
+    const std::string sensorLabel = "thermal sensor index " + std::to_string(index);
+    if (sensorConfig.id.empty())
+    {
+        setError(outError, sensorLabel + " has an empty id");
+        return false;
+    }
+
+    if (!sensorIds->insert(sensorConfig.id).second)
+    {
+        setError(outError, sensorLabel + " duplicates id '" + sensorConfig.id + "'");
+        return false;
+    }
+
+    if (!sensorConfig.sensorName.empty() && !sensorNames->insert(sensorConfig.sensorName).second)
+    {
+        setError(outError, sensorLabel + " duplicates sensorName '" + sensorConfig.sensorName + "'");
+        return false;
+    }
+
+    const ThermalRange& measurable = sensorConfig.sensorReadingRangeCelsius;
+    const ThermalRange& operational = sensorConfig.operationalTemperatureCelsius;
+    if (measurable.min > measurable.max)
+    {
+        setError(outError, sensorLabel + " has an inverted sensor_reading_range_celsius");
+        return false;
+    }
+
+    if (operational.min > operational.max)
+    {
+        setError(outError, sensorLabel + " has an inverted operational_temperature_celsius");
+        return false;
+    }
+
+    if (operational.min < measurable.min || operational.max > measurable.max)
+    {
+        setError(
+            outError,
+            sensorLabel + " operational_temperature_celsius must be contained by sensor_reading_range_celsius");
+        return false;
+    }
+
+    const ThermalTriggers& triggers = sensorConfig.triggers;
+    if (!(triggers.criticalTemperatureRecoveredCelsius <
+          triggers.criticalTemperatureExceededCelsius &&
+          triggers.criticalTemperatureExceededCelsius <
+          triggers.enteringCriticalShutdownCelsius))
+    {
+        setError(
+            outError,
+            sensorLabel + " triggers must satisfy recovered < exceeded < shutdown");
+        return false;
+    }
+
+    if (triggers.criticalTemperatureRecoveredCelsius < measurable.min ||
+        triggers.enteringCriticalShutdownCelsius > measurable.max)
+    {
+        setError(outError, sensorLabel + " triggers must be within sensor_reading_range_celsius");
+        return false;
+    }
+
+    if (sensorConfig.policy.shutdownMinDowntimeSeconds < 0 ||
+        sensorConfig.policy.recovery.minCooldownSeconds < 0)
+    {
+        setError(outError, sensorLabel + " policy durations must be non-negative");
+        return false;
+    }
+
+    return true;
 }
 
 bool vcomponent_Thermal_get_sensor_info(
@@ -414,11 +500,19 @@ bool vcomponent_Thermal_parse_config(
     bool success = true;
     const uint32_t sensorCount = ut_kvp_getListCount(kvpTestInstance, THERMAL_LIST);
     thermalConfiguration.sensors.reserve(sensorCount);
+    std::unordered_set<std::string> sensorIds;
+    std::unordered_set<std::string> sensorNames;
 
     for (uint32_t i = 0; i < sensorCount; ++i)
     {
         ThermalSensorConfig sensorConfig;
         if (!vcomponent_Thermal_get_sensor_info(kvpTestInstance, i, sensorConfig, outError))
+        {
+            success = false;
+            break;
+        }
+
+        if (!validateSensorConfiguration(sensorConfig, i, &sensorIds, &sensorNames, outError))
         {
             success = false;
             break;

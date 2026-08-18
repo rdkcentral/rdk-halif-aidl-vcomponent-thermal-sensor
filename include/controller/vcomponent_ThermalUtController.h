@@ -21,7 +21,19 @@
 
 /**
  * @file vcomponent_ThermalUtController.h
- * @brief UT-controller facade for the Thermal sensor vcomponent.
+ * @brief UT-control-plane facade for the Thermal sensor vcomponent.
+ *
+ * The control plane accepts the following KVP/YAML message shape on the
+ * IThermalSensor protocol root:
+ *
+ *   IThermalSensor:
+ *     command: temperature_update
+ *     sensorName: <configured sensorName or id>
+ *     temperatureCelsius: <floating-point Celsius value>
+ *     timestampMonotonicMs: <monotonic timestamp in milliseconds>
+ *
+ * Slash-delimited flattened keys are accepted by the implementation:
+ *   IThermalSensor/command
  */
 
 #include "utility/vcomponent_ThermalHfpConfigUtils.h"
@@ -31,12 +43,13 @@
 #include <ut_kvp_profile.h>
 #include <ut_log.h>
 
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <string>
-#include <tuple>
 
 namespace vcomponent
 {
@@ -44,6 +57,16 @@ namespace thermal
 {
 namespace controller
 {
+
+/**
+ * @brief Parsed thermal control-plane temperature update.
+ */
+struct ThermalTemperatureUpdate
+{
+    std::string sensorName;              ///< Configured sensorName or sensor id.
+    double temperatureCelsius{0.0};      ///< Temperature sample in degrees Celsius.
+    std::int64_t timestampMonotonicMs{0};///< Caller-supplied monotonic timestamp.
+};
 
 /**
  * @brief UT-controller facade for the Thermal sensor vcomponent.
@@ -55,11 +78,13 @@ namespace controller
 class ThermalUtController
 {
 public:
+    // PUBLIC_INTERFACE
     /**
      * @brief Construct the controller.
      */
     ThermalUtController();
 
+    // PUBLIC_INTERFACE
     /**
      * @brief Destroy the controller and stop any running UT control-plane instance.
      */
@@ -94,12 +119,11 @@ public:
     /**
      * @brief Initialize and start the UT control-plane endpoint.
      *
-     * The controller registers for messages under the `thermal` profile key.
-     * Incoming KVP messages are copied into an internal FIFO queue so service
-     * code can map them into thermal vcomponent behaviour.
+     * The controller registers for the IThermalSensor temperature_update command
+     * keys and queues parsed temperature samples for the service worker thread.
      *
      * @param[in] port      TCP port used by the UT control plane.
-     * @param[in] userData  Optional caller context returned with queued messages.
+     * @param[in] userData  Optional caller context retained for diagnostics.
      *
      * @return true when the control plane is initialized and started.
      */
@@ -113,11 +137,11 @@ public:
 
     // PUBLIC_INTERFACE
     /**
-     * @brief Pop the next pending UT control-plane message, if available.
+     * @brief Pop the next pending temperature_update message, if available.
      *
-     * @return Optional tuple containing message key, payload, and caller user data.
+     * @return Optional parsed temperature update.
      */
-    std::optional<std::tuple<std::string, std::string, void*>> getMessage();
+    std::optional<ThermalTemperatureUpdate> getTemperatureUpdate();
 
     // PUBLIC_INTERFACE
     /**
@@ -137,8 +161,17 @@ private:
     ut_controlPlane_instance_t* m_controlPlaneInstance;
     void* m_userData;
 
+    // The control-plane library owns callback dispatch. Coordinate shutdown
+    // with callback entry so it cannot invoke this object after teardown.
+    mutable std::mutex m_lifecycleMutex;
+    std::condition_variable m_callbacksDrained;
+    bool m_acceptingCallbacks{false};
+    std::size_t m_activeCallbacks{0};
+
+    // A single pending sample per sensor bounds memory and ensures that the
+    // service processes the newest telemetry rather than an unbounded backlog.
     mutable std::mutex m_queueMutex;
-    std::queue<std::tuple<std::string, std::string, void*>> m_messageQueue;
+    std::map<std::string, ThermalTemperatureUpdate> m_pendingTemperatureUpdates;
 };
 
 } // namespace controller

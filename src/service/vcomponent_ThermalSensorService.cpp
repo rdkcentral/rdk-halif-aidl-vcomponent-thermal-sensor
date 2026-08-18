@@ -22,12 +22,12 @@
  * @brief Entrypoint for the Thermal Sensor vcomponent service.
  *
  * The entrypoint parses command-line arguments, loads and validates the HFP
- * YAML profile before publishing the binder service, then passes the parsed
- * configuration to the service implementation. The Binder runtime initializes
- * its sensor model from that configuration and exposes it through the thermal
- * AIDL state and telemetry APIs. UT/control-plane work remains reserved.
+ * YAML profile before publishing the Binder service, starts the IThermalSensor
+ * UT control plane on the requested port, then joins the Binder thread pool.
+ * Control-plane temperature updates flow through the thermal policy engine; when
+ * the aggregate state reaches CRITICAL_SHUTDOWN_IMMINENT, listeners are notified
+ * first and the thermal service then calls the separate BootReason Binder API.
  */
-
 
 #include "aidl/vcomponent_ThermalSensor.h"
 #include "service/vcomponent_ThermalSensorService.h"
@@ -39,9 +39,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <optional>
 #include <string>
-
 
 // Binder publish/join
 #include <binder/IPCThreadState.h>
@@ -59,7 +57,6 @@ constexpr int kFirstCommandLineArgumentIndex = 1;
 constexpr int kArgumentValueOffset = 1;
 constexpr int kServiceStartupFailureExitCode = 1;
 constexpr int kInvalidArgumentsExitCode = 2;
-
 
 static bool parsePort(const char* s, std::uint16_t* out)
 {
@@ -83,13 +80,13 @@ static bool parseArgs(
     int argc,
     char** argv,
     std::string* outHfpPath,
-    std::optional<std::uint16_t>* outPort)
+    std::uint16_t* outControlPort)
 {
-    if (!outHfpPath || !outPort)
+    if (!outHfpPath || !outControlPort)
         return false;
 
     *outHfpPath = vcomponent::thermal::service::kDefaultHfpPath;
-    *outPort = std::nullopt;
+    *outControlPort = vcomponent::thermal::service::kDefaultControlPlanePort;
 
     if (argc < 1 || !argv || !argv[0])
         return false;
@@ -134,7 +131,7 @@ static bool parseArgs(
                     argv[i + kArgumentValueOffset]);
                 return false;
             }
-            *outPort = port;
+            *outControlPort = port;
             i += kArgumentValueOffset;
         }
         else
@@ -147,7 +144,9 @@ static bool parseArgs(
     return true;
 }
 
-static void publishAndJoinThreadPool(vcomponent::utility::ThermalHfpConfig thermalConfig)
+static void publishAndJoinThreadPool(
+    vcomponent::utility::ThermalHfpConfig thermalConfig,
+    std::uint16_t controlPort)
 {
     using com::rdk::hal::sensor::thermal::ThermalSensor;
 
@@ -156,9 +155,13 @@ static void publishAndJoinThreadPool(vcomponent::utility::ThermalHfpConfig therm
         serviceName = "(null)";
 
     android::sp<android::IServiceManager> sm = android::defaultServiceManager();
-    android::sp<ThermalSensor> svc = new ThermalSensor(std::move(thermalConfig));
+    android::sp<ThermalSensor> svc = new ThermalSensor(std::move(thermalConfig), controlPort);
 
-    LOGF_INFO("%s Publishing Thermal binder service (serviceName=%s)", logPrefix, serviceName);
+    LOGF_INFO(
+        "%s Publishing Thermal binder service (serviceName=%s, controlPort=%u)",
+        logPrefix,
+        serviceName,
+        static_cast<unsigned>(controlPort));
 
     const android::status_t st = sm->addService(android::String16(serviceName), svc);
     if (st != android::OK)
@@ -182,8 +185,15 @@ void vcomponent::thermal::service::printUsage(const char* progName)
     LOGF_INFO("%s   --hfp <path>       Optional HFP YAML path (default: %s).",
               logPrefix,
               vcomponent::thermal::service::kDefaultHfpPath);
-    LOGF_INFO("%s   --port <port>      Optional UT Control Plane port (reserved for future use).",
-              logPrefix);
+    LOGF_INFO("%s   --port <port>      Optional IThermalSensor UT Control Plane port (default: %u).",
+              logPrefix,
+              static_cast<unsigned>(vcomponent::thermal::service::kDefaultControlPlanePort));
+    LOGF_INFO("%s", logPrefix);
+    LOGF_INFO("%s Control-plane protocol:", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/command=temperature_update", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/sensorName=<configured sensorName or id>", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/temperatureCelsius=<double>", logPrefix);
+    LOGF_INFO("%s   IThermalSensor/timestampMonotonicMs=<int64>", logPrefix);
 }
 
 int main(int argc, char** argv)
@@ -193,9 +203,9 @@ int main(int argc, char** argv)
     LOGF_INFO("%s ===============================", logPrefix);
 
     std::string configPath;
-    std::optional<std::uint16_t> port;
+    std::uint16_t controlPort = vcomponent::thermal::service::kDefaultControlPlanePort;
 
-    if (!parseArgs(argc, argv, &configPath, &port))
+    if (!parseArgs(argc, argv, &configPath, &controlPort))
     {
         vcomponent::thermal::service::printUsage((argc > 0) ? argv[0] : nullptr);
         return kInvalidArgumentsExitCode;
@@ -233,23 +243,18 @@ int main(int argc, char** argv)
     if (!serviceName)
         serviceName = "(null)";
 
-    LOGF_INFO("%s Starting Thermal binder service (serviceName=%s, configPath=%s)",
-              logPrefix,
-              serviceName,
-              configPath.c_str());
+    LOGF_INFO(
+        "%s Starting Thermal binder service (serviceName=%s, configPath=%s, controlPort=%u)",
+        logPrefix,
+        serviceName,
+        configPath.c_str(),
+        static_cast<unsigned>(controlPort));
 
-    if (port.has_value())
-    {
-        // The optional port is accepted and logged; it is not yet connected to
-        // the service's UT controller.
-        LOGF_INFO("%s --port provided (reserved): %u",
-                  logPrefix,
-                  static_cast<unsigned>(*port));
-    }
-
-    // Publish the service with the startup-validated configuration and join
-    // the Binder thread pool. The YAML profile is intentionally parsed once.
-    publishAndJoinThreadPool(std::move(thermalConfig));
+    // Publish the service with the startup-validated configuration and start the
+    // IThermalSensor control plane on the selected port. The YAML profile is
+    // intentionally parsed once; subsequent reboot escalation is handled by the
+    // ThermalSensor state-transition path through the BootReason Binder service.
+    publishAndJoinThreadPool(std::move(thermalConfig), controlPort);
 
     return 0;
 }

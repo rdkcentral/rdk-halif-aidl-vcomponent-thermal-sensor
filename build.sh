@@ -36,9 +36,11 @@ VCOMPONENT="${VCOMPONENT:-sensor}"
 
 VCOMPONENT_VERSION="${VCOMPONENT_VERSION:-0.2.0.0}"
 VCOMPONENT_INCLUDE_VERSION="${VCOMPONENT_INCLUDE_VERSION:-0.2.0.0}"
+BOOTREASON_VERSION="${BOOTREASON_VERSION:-0.1.0.0}"
 
 declare -A HALIF_COMPONENTS=(
   [sensor]="current"
+  [bootreason]="current"
 )
 
 OUT_TAR_FILE=vcomponent-SensorThermal.tar.gz
@@ -123,6 +125,14 @@ generate_hal_interfaces()
         exit 1
     }
 
+    # BootReason is a separate Binder service used by Thermal when the aggregate
+    # policy enters CRITICAL_SHUTDOWN_IMMINENT. Build its generated client
+    # headers/library instead of copying interface files into this component.
+    ./build_modules.sh "bootreason" --clean --version "${BOOTREASON_VERSION}" || {
+        echo -e "${BOLD}* ${RED}Failed to build HALIF modules (bootreason). Exiting.${RESET}"
+        exit 1
+    }
+
     popd >/dev/null
 
     # After generating HAL interfaces/tools, path for the derived environment variables
@@ -136,6 +146,7 @@ halif_binder_env()
 {
     AIDL_SRC_VERSION="${AIDL_SRC_VERSION:-${VCOMPONENT_VERSION}}"
     VCOMPONENT_HALIF_INCLUDE_DIR="${VCOMPONENT_HALIF_INCLUDE_DIR:-${RDK_HAL_DIR}/${VCOMPONENT}/${VCOMPONENT_VERSION}/include}"
+    BOOTREASON_HALIF_INCLUDE_DIR="${BOOTREASON_HALIF_INCLUDE_DIR:-${RDK_HAL_DIR}/bootreason/${BOOTREASON_VERSION}/include}"
 
     AIDL_BIN="${AIDL_BIN:-${RDK_HAL_DIR}/out/target/bin/aidl}"
     AIDL_CPP_BIN="${AIDL_CPP_BIN:-${RDK_HAL_DIR}/out/target/bin/aidl-cpp}"
@@ -161,6 +172,7 @@ halif_binder_env()
     echo -e "${BOLD}${GREEN}  RDK_HAL_DIR=${RESET}${YELLOW}${RDK_HAL_DIR}${RESET}"
     echo -e "${BOLD}${GREEN}  VCOMPONENT=${RESET}${YELLOW}${VCOMPONENT}${RESET}"
     echo -e "${BOLD}${GREEN}  VCOMPONENT_VERSION=${RESET}${YELLOW}${VCOMPONENT_VERSION}${RESET}"
+    echo -e "${BOLD}${GREEN}  BOOTREASON_VERSION=${RESET}${YELLOW}${BOOTREASON_VERSION}${RESET}"
     echo -e "${BOLD}${GREEN}  AIDL_BIN=${RESET}${YELLOW}${AIDL_BIN}${RESET}"
 }
 
@@ -269,9 +281,11 @@ build_ThermalSensor()
         -DHALIF_LIB_DIR="${HALIF_LIB_DIR}" \
         -DHALIF_INCLUDE_DIR="${HALIF_INCLUDE_DIR}" \
         -DTHERMAL_HALIF_INCLUDE_DIR="${VCOMPONENT_HALIF_INCLUDE_DIR}" \
+        -DBOOTREASON_HALIF_INCLUDE_DIR="${BOOTREASON_HALIF_INCLUDE_DIR}" \
         -DHALIF_COMMON_INCLUDE_DIR="${HALIF_COMMON_INCLUDE_DIR}" \
         -DCOMMON_INCLUDE_DIR="${COMMON_INCLUDE_DIR}" \
         -DVCOMPONENT_VERSION="${VCOMPONENT_VERSION}" \
+        -DBOOTREASON_VERSION="${BOOTREASON_VERSION}" \
         "${EXTRA_CMAKE_ARGS[@]}"
 
     local cfg_rc=$?
@@ -287,6 +301,12 @@ build_ThermalSensor()
     cp -f "${HALIF_LIB_DIR}"/libsensor*-cpp.so "${TOP_BUILD_DIR}/" 2>/dev/null || \
     cp -f "${HALIF_LIB_DIR}"/libsensor*.so "${TOP_BUILD_DIR}/" 2>/dev/null || \
     echo -e "${YELLOW}Warning: sensor shared library not found under ${HALIF_LIB_DIR}${RESET}"
+
+    # REQUIRED: thermal reboot escalation uses the separate BootReason Binder
+    # interface and must ship the matching generated client shared library.
+    cp -f "${HALIF_LIB_DIR}"/libbootreason*-cpp.so "${TOP_BUILD_DIR}/" 2>/dev/null || \
+    cp -f "${HALIF_LIB_DIR}"/libbootreason*.so "${TOP_BUILD_DIR}/" 2>/dev/null || \
+    echo -e "${YELLOW}Warning: bootreason shared library not found under ${HALIF_LIB_DIR}${RESET}"
 }
 
 ###############################################################################

@@ -24,7 +24,10 @@
  * The service is published as `sensor.thermal` and implements the AIDL APIs for
  * listener registration, aggregate state lookup, and temperature telemetry.
  * Sensor records are initialized from the selected HFP YAML profile. Runtime
- * control-plane orchestration remains intentionally excluded from this pass.
+ * control-plane orchestration accepts IThermalSensor temperature_update messages
+ * on the configured UT port, updates telemetry/state in memory, notifies
+ * listeners on aggregate state transitions, and requests the separate
+ * BootReason Binder service when thermal shutdown is imminent.
  */
 
 #include "aidl/vcomponent_ThermalSensor.h"
@@ -33,13 +36,19 @@
 #include "utility/vcomponent_ThermalHelper.h"
 
 #include <binder/IInterface.h>
+#include <binder/IServiceManager.h>
 #include <binder/Status.h>
+#include <com/rdk/hal/bootreason/BootCause.h>
+#include <com/rdk/hal/bootreason/IBootReason.h>
+#include <com/rdk/hal/bootreason/ResetType.h>
 #include <utils/String16.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
-#include <tuple>
+#include <thread>
 #include <vector>
 
 namespace com
@@ -56,6 +65,9 @@ namespace thermal
 namespace
 {
 constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensor>";
+constexpr int kUtWorkerIdleSleepMs = 50;
+constexpr const char* kThermalRebootReason = "thermal_shutdown";
+constexpr std::size_t kBootReasonMaxBytes = 64U;
 
 int stateSeverity(State state)
 {
@@ -121,11 +133,34 @@ double initialTemperatureForSensor(const vcomponent::utility::ThermalSensorConfi
 }
 } // namespace
 
-ThermalSensor::ThermalSensor(vcomponent::utility::ThermalHfpConfig configuration)
+ThermalSensor::ThermalSensor(
+    vcomponent::utility::ThermalHfpConfig configuration,
+    std::uint16_t controlPort)
+    : m_controlPort(controlPort)
 {
-    LOGF_INFO("%s: constructing AIDL service instance", logPrefix);
+    LOGF_INFO(
+        "%s: constructing AIDL service instance with controlPort=%u",
+        logPrefix,
+        static_cast<unsigned>(m_controlPort));
 
     initializeSensors(std::move(configuration));
+
+    if (m_ut.init(m_controlPort, this))
+    {
+        m_stopUtWorker = false;
+        m_utWorkerThread = std::thread(&ThermalSensor::utWorkerLoop, this);
+        LOGF_INFO(
+            "%s: IThermalSensor control plane enabled on port %u",
+            logPrefix,
+            static_cast<unsigned>(m_controlPort));
+    }
+    else
+    {
+        LOGF_WARN(
+            "%s: IThermalSensor control plane failed to start on port %u; Binder service remains available",
+            logPrefix,
+            static_cast<unsigned>(m_controlPort));
+    }
 
     LOGF_INFO(
         "%s: constructed (serviceName=%s)",
@@ -138,13 +173,16 @@ ThermalSensor::~ThermalSensor()
     LOGF_INFO("%s: destroying AIDL service instance", logPrefix);
 
     m_stopUtWorker = true;
+
     if (m_utWorkerThread.joinable())
     {
+        LOGF_DEBUG("%s: joining control-plane worker thread", logPrefix);
         m_utWorkerThread.join();
     }
 
-    // Control-plane shutdown is intentionally not invoked here because the
-    // control-plane path is not initialized in this implementation pass.
+    m_ut.shutdown();
+
+    LOGF_INFO("%s: destroyed AIDL service instance", logPrefix);
 }
 
 void ThermalSensor::initializeSensors(vcomponent::utility::ThermalHfpConfig configuration)
@@ -189,15 +227,42 @@ void ThermalSensor::initializeSensors(vcomponent::utility::ThermalHfpConfig conf
 
 void ThermalSensor::utWorkerLoop()
 {
-    // Control-plane processing is intentionally excluded from this pass.
-    LOGF_DEBUG("%s: UT worker loop is disabled; control-plane work is excluded", logPrefix);
+    LOGF_INFO(
+        "%s: control-plane worker started (port=%u)",
+        logPrefix,
+        static_cast<unsigned>(m_controlPort));
+
+    while (!m_stopUtWorker.load())
+    {
+        std::optional<vcomponent::thermal::controller::ThermalTemperatureUpdate> update =
+            m_ut.getTemperatureUpdate();
+
+        if (update.has_value())
+        {
+            handleControlPlaneUpdate(*update);
+            continue;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(kUtWorkerIdleSleepMs));
+    }
+
+    LOGF_INFO("%s: control-plane worker stopped", logPrefix);
 }
 
-void ThermalSensor::handleQueuedUtMessage(const std::tuple<std::string, std::string, void*>& msg)
+void ThermalSensor::handleControlPlaneUpdate(
+    const vcomponent::thermal::controller::ThermalTemperatureUpdate& update)
 {
-    // Control-plane message parsing is intentionally excluded from this pass.
-    (void)msg;
-    LOGF_DEBUG("%s: queued UT message ignored; control-plane work is excluded", logPrefix);
+    LOGF_INFO(
+        "%s: handling temperature_update sensorName=%s temperatureCelsius=%.3f timestampMonotonicMs=%lld",
+        logPrefix,
+        update.sensorName.c_str(),
+        update.temperatureCelsius,
+        static_cast<long long>(update.timestampMonotonicMs));
+
+    applyTemperatureSample(
+        update.sensorName,
+        update.temperatureCelsius,
+        update.timestampMonotonicMs);
 }
 
 State ThermalSensor::evaluateSensorState(const SensorRuntime& runtime, double temperatureCelsius) const
@@ -231,13 +296,17 @@ State ThermalSensor::evaluateSensorState(const SensorRuntime& runtime, double te
     return State::NORMAL;
 }
 
-void ThermalSensor::applyTemperatureSample(const std::string& sensorId, double temperatureCelsius)
+void ThermalSensor::applyTemperatureSample(
+    const std::string& sensorNameOrId,
+    double temperatureCelsius,
+    std::int64_t timestampMonotonicMs)
 {
     LOGF_INFO(
-        "%s: applying temperature sample sensorId=%s temperatureCelsius=%.3f",
+        "%s: applying temperature sample sensorNameOrId=%s temperatureCelsius=%.3f timestampMonotonicMs=%lld",
         logPrefix,
-        sensorId.c_str(),
-        temperatureCelsius);
+        sensorNameOrId.c_str(),
+        temperatureCelsius,
+        static_cast<long long>(timestampMonotonicMs));
 
     ActionEvent event{};
     bool shouldNotify = false;
@@ -249,20 +318,38 @@ void ThermalSensor::applyTemperatureSample(const std::string& sensorId, double t
             m_sensors.begin(),
             m_sensors.end(),
             [&](const SensorRuntime& runtime) {
-                return runtime.config.id == sensorId;
+                return runtime.config.sensorName == sensorNameOrId || runtime.config.id == sensorNameOrId;
             });
 
         if (it == m_sensors.end())
         {
             LOGF_WARN(
-                "%s: ignoring temperature sample for unknown sensorId=%s",
+                "%s: ignoring temperature_update for unknown sensorNameOrId=%s",
                 logPrefix,
-                sensorId.c_str());
+                sensorNameOrId.c_str());
             return;
         }
 
-        const std::int64_t timestampMs = vcomponent::utility::monotonicTimestampMs();
-        it->reading = makeReadingFromConfig(it->config, temperatureCelsius, timestampMs);
+        const auto& measurableRange = it->config.sensorReadingRangeCelsius;
+        if (!std::isfinite(temperatureCelsius) ||
+            temperatureCelsius < measurableRange.min ||
+            temperatureCelsius > measurableRange.max)
+        {
+            LOGF_WARN(
+                "%s: rejecting out-of-range temperature_update sensorNameOrId=%s "
+                "temperatureCelsius=%.3f measurableRange=[%.3f, %.3f]",
+                logPrefix,
+                sensorNameOrId.c_str(),
+                temperatureCelsius,
+                measurableRange.min,
+                measurableRange.max);
+            return;
+        }
+
+        const std::int64_t effectiveTimestampMs =
+            (timestampMonotonicMs >= 0) ? timestampMonotonicMs : vcomponent::utility::monotonicTimestampMs();
+
+        it->reading = makeReadingFromConfig(it->config, temperatureCelsius, effectiveTimestampMs);
         it->state = evaluateSensorState(*it, temperatureCelsius);
 
         State aggregateState = State::NORMAL;
@@ -271,10 +358,21 @@ void ThermalSensor::applyTemperatureSample(const std::string& sensorId, double t
             aggregateState = moreSevere(aggregateState, runtime.state);
         }
 
+        if (m_currentState == State::CRITICAL_SHUTDOWN_IMMINENT &&
+            aggregateState != State::CRITICAL_SHUTDOWN_IMMINENT)
+        {
+            LOGF_INFO(
+                "%s: suppressing aggregate transition from CRITICAL_SHUTDOWN_IMMINENT to %s for sensorNameOrId=%s",
+                logPrefix,
+                toString(aggregateState).c_str(),
+                sensorNameOrId.c_str());
+            aggregateState = State::CRITICAL_SHUTDOWN_IMMINENT;
+        }
+
         LOGF_DEBUG(
-            "%s: sample evaluated sensorId=%s sensorState=%s aggregateState=%s previousAggregateState=%s",
+            "%s: sample evaluated sensorNameOrId=%s sensorState=%s aggregateState=%s previousAggregateState=%s",
             logPrefix,
-            sensorId.c_str(),
+            sensorNameOrId.c_str(),
             toString(it->state).c_str(),
             toString(aggregateState).c_str(),
             toString(m_currentState).c_str());
@@ -284,7 +382,7 @@ void ThermalSensor::applyTemperatureSample(const std::string& sensorId, double t
             m_currentState = aggregateState;
 
             event.state = aggregateState;
-            event.timestampMonotonicMs = timestampMs;
+            event.timestampMonotonicMs = effectiveTimestampMs;
             event.temperatureReading = it->reading;
             shouldNotify = true;
         }
@@ -297,6 +395,14 @@ void ThermalSensor::applyTemperatureSample(const std::string& sensorId, double t
             logPrefix,
             toString(event.state).c_str());
         notifyListeners(event);
+
+        if (event.state == State::CRITICAL_SHUTDOWN_IMMINENT)
+        {
+            LOGF_INFO(
+                "%s: aggregate state entered CRITICAL_SHUTDOWN_IMMINENT; requesting BootReason reboot",
+                logPrefix);
+            scheduleThermalReboot(kThermalRebootReason);
+        }
     }
 }
 
@@ -331,6 +437,101 @@ void ThermalSensor::notifyListeners(const ActionEvent& event)
                 toString(event.state).c_str());
         }
     }
+}
+
+void ThermalSensor::scheduleThermalReboot(const std::string& reasonString)
+{
+    bool expected = false;
+    if (!m_rebootScheduled.compare_exchange_strong(expected, true))
+    {
+        LOGF_INFO(
+            "%s: thermal reboot already scheduled; ignoring duplicate request",
+            logPrefix);
+        return;
+    }
+
+    LOGF_INFO(
+        "%s: requesting thermal software reboot immediately",
+        logPrefix);
+    requestThermalReboot(reasonString);
+}
+
+void ThermalSensor::requestThermalReboot(const std::string& reasonString)
+{
+    using com::rdk::hal::bootreason::BootCause;
+    using com::rdk::hal::bootreason::IBootReason;
+    using com::rdk::hal::bootreason::ResetType;
+
+    if (reasonString.empty() || reasonString.size() > kBootReasonMaxBytes)
+    {
+        LOGF_ERROR(
+            "%s: refusing BootReason reboot because reason length=%zu is outside the allowed range 1..%zu",
+            logPrefix,
+            reasonString.size(),
+            kBootReasonMaxBytes);
+        return;
+    }
+
+    android::sp<android::IServiceManager> serviceManager = android::defaultServiceManager();
+    if (!serviceManager.get())
+    {
+        LOGF_ERROR("%s: cannot request thermal reboot because Binder service manager is unavailable", logPrefix);
+        return;
+    }
+
+    const std::string bootServiceName = IBootReason::serviceName();
+    const android::sp<android::IBinder> binder =
+        serviceManager->checkService(android::String16(bootServiceName.c_str()));
+    if (!binder.get())
+    {
+        LOGF_ERROR(
+            "%s: BootReason service '%s' is unavailable; thermal reboot request was not sent",
+            logPrefix,
+            bootServiceName.c_str());
+        return;
+    }
+
+    const android::sp<IBootReason> boot = android::interface_cast<IBootReason>(binder);
+    if (!boot.get())
+    {
+        LOGF_ERROR(
+            "%s: failed to create IBootReason client for service '%s'",
+            logPrefix,
+            bootServiceName.c_str());
+        return;
+    }
+
+    const android::String16 binderReason(reasonString.c_str());
+
+    // Record THERMAL_RESET first so BootReason persists the correct cause for
+    // the subsequent software reboot instead of falling back to WARM_RESET.
+    const android::binder::Status causeStatus =
+        boot->setBootCause(BootCause::THERMAL_RESET, binderReason);
+    if (!causeStatus.isOk())
+    {
+        LOGF_ERROR(
+            "%s: BootReason setBootCause(THERMAL_RESET) failed; reboot request suppressed",
+            logPrefix);
+        return;
+    }
+
+    // Request the normal software reboot after listeners have already received
+    // the critical thermal event. The Binder success only means BootReason
+    // accepted the request; platform reboot completion remains best effort.
+    const android::binder::Status rebootStatus =
+        boot->reboot(ResetType::SOFTWARE_REBOOT, binderReason);
+    if (!rebootStatus.isOk())
+    {
+        LOGF_ERROR(
+            "%s: BootReason reboot(SOFTWARE_REBOOT) failed after setting THERMAL_RESET",
+            logPrefix);
+        return;
+    }
+
+    LOGF_INFO(
+        "%s: requested thermal software reboot through BootReason with reason=%s",
+        logPrefix,
+        reasonString.c_str());
 }
 
 android::binder::Status ThermalSensor::registerEventListener(

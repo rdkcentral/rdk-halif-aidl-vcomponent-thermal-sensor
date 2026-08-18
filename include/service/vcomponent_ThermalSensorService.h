@@ -22,9 +22,12 @@
  * @file vcomponent_ThermalSensorService.h
  * @brief Public entrypoint definitions for the Thermal Sensor Service executable.
  *
- * The service publishes the Binder/AIDL service (sensor.thermal) and then joins
- * the Binder thread pool via Binder APIs.
+ * The service publishes the Binder/AIDL service (sensor.thermal), starts the
+ * IThermalSensor UT control plane for temperature_update messages, and then
+ * joins the Binder thread pool via Binder APIs.
  */
+
+#include <cstdint>
 
 namespace vcomponent::thermal::service
 {
@@ -39,6 +42,11 @@ namespace vcomponent::thermal::service
  */
 inline constexpr const char* kDefaultHfpPath =
     "vcomponent_configurations/hfp-sensor-thermal.yaml";
+
+/**
+ * @brief Default UT control-plane port for IThermalSensor messages.
+ */
+inline constexpr std::uint16_t kDefaultControlPlanePort = 8085U;
 
 // PUBLIC_INTERFACE
 /**
