@@ -53,6 +53,29 @@ While those directories are empty, the corresponding targets are **skipped**
 Add sources and re-run the build - the targets appear automatically with no
 CMake edits required.
 
+### Clone the Repository
+
+```bash
+git clone https://git@github.com:rdkcentral/rdk-halif-aidl-vcomponent-thermal-sensor.git
+
+cd rdk-halif-aidl-vcomponent-thermal-sensor
+```
+
+### Environment variables
+
+The build is driven by `./build.sh` in this repository. It uses (or defaults) the following environment variables:
+
+- `UT_CORE_VERSION`: Specific version of UT-Core to build. If not set, the script checks out the latest tag.
+- `RDK_HALIF_AIDL_VERSION`: Git ref used if the script must clone `rdk-halif-aidl`. The script defaults to `main`.
+
+Example:
+
+```bash
+export UT_CORE_VERSION=5.1.0
+export RDK_HALIF_AIDL_VERSION=0.22.0
+```
+
+
 ## Build
 
 ```sh
