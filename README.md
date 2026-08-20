@@ -1,72 +1,58 @@
-# Thermal Sensor vcomponent - Build Skeleton
+# rdk-halif-aidl-vcomponent-thermal-sensor
 
-This directory is a **build-only skeleton** for the thermal sensor HAL
-vcomponent. It is a copy of the build setup from `TEVSensorThermal/` with **all
-implementation content removed**.
+The Thermal Sensor vComponent module provides an emulated Thermal Sensor HAL
+implementation backed by a Binder/AIDL service. The service uses an HFP (HAL
+Feature Profile) YAML configuration to define the thermal sensor interface
+version, configured sensors, and thermal policy thresholds. During startup, the
+service loads the HFP YAML, starts a UT ControlPlane endpoint for receiving
+YAML/KVP control messages, publishes the Binder service under the AIDL-defined
+Thermal Sensor service name, and then joins the Binder thread pool.
 
-It contains the build system, dependency bootstrap and packaging rules - and
-nothing else. No AIDL service implementations, no controllers, no utilities, no
-service `main()`.
+## Table of Contents
 
-## AIDL specification reference
+- [Thermal Sensor (vComponent) README](#rdk-halif-aidl-vcomponent-thermal-sensor)
+  - [Acronyms, Terms and Abbreviations](#acronyms-terms-and-abbreviations)
+  - [Build RDKThermalSensorService](#build-rdkthermalsensorservice)
+  - [Run Thermal Sensor](#run-thermal-sensor)
 
-- https://github.com/rdkcentral/rdk-halif-aidl/tree/develop/sensor/current/com/rdk/hal/sensor/thermal
+## Acronyms, Terms and Abbreviations
 
-> The thermal AIDL package lives inside the HALIF **`sensor`** module, so
-> `build.sh` builds `sensor` (producing `libsensor-vcurrent-cpp.so`).
+| Acronym / Term | Description |
+|----------------|-------------|
+| **AIDL** | Android Interface Definition Language |
+| **HAL** | Hardware Abstraction Layer |
+| **HFP** | HAL Feature Profile (YAML profile used to configure the vComponent) |
+| **RDK** | Reference Design Kit |
+| **UT-Core** | RDK Unified Test Core Framework |
+| **UT ControlPlane** | UT-Core / UT-Control control plane for receiving YAML/KVP control messages |
+| **VTS** | Vendor Test Suite |
+| **YAML** | YAML Ain’t Markup Language (configuration format) |
 
-## What is included
+## Build RDKThermalSensorService
 
-| Path | Purpose |
-| --- | --- |
-| `build.sh` | Clones/builds `rdk-halif-aidl` (binder tools + `common` + `sensor` modules) and `ut-core`, then configures/builds this component |
-| `CMakeLists.txt` | Toolchain/standard setup, sysroot vs `build.sh` env detection, HALIF/Binder/ut-control discovery, config staging, install rules |
-| `vcomponent_configurations/hfp-sensor-thermal.yaml` | HFP feature profile consumed at runtime and installed with the component |
-| `vcomponent_configurations/hfp-sensor-thermal.yaml` | Verbatim copy of the upstream `rdk-halif-aidl` thermal HFP profile (no line edits) |
-| `include/common/logger.h` | Printf-style logging helper macros (`LOGF_*`) |
-| `include/utility/vcomponent_ThermalHfpConfigUtils.h` | Thermal HFP configuration model mirroring the YAML hierarchy |
-| `include/utility/vcomponent_ThermalHelper.h` | Small helper utility declarations |
-| `include/utility/vcomponent_ThermalParseConfig.h` | Thermal-only HFP YAML parsing entrypoints |
-| `include/controller/vcomponent_ThermalUtController.h` | UT-controller facade contract |
-| `src/utility/vcomponent_ThermalParseConfig.cpp` | Implemented parser, scoped strictly to the `sensor.thermal` keys required by the thermal YAML |
-| `src/utility/vcomponent_ThermalHelper.cpp` | Skeleton stubs for the helper utilities |
-| `src/controller/vcomponent_ThermalUtController.cpp` | Skeleton stubs for the UT controller facade |
-| `src/service/vcomponent_ThermalSensorService.cpp` | Skeleton `main()` (argument handling + controller wiring only) |
+### Prerequisites for UT-Core
 
-## What is deliberately NOT included
-
-- `src/aidl/` sources (`vcomponent_ThermalSensor.cpp`, `vcomponent_ThermalEventListener.cpp`)
-- `include/aidl/` headers (`vcomponent_ThermalSensor.h`, `vcomponent_ThermalEventListener.h`)
-- Any binder publishing / AIDL API implementation
-- Parsing of non-thermal HFP sections (only `sensor.thermal` keys are handled)
-
-## Skeleton build behaviour
-
-`CMakeLists.txt` discovers sources with `file(GLOB ...)` instead of hard-coding
-them:
-
-- `src/aidl/*.cpp`, `src/utility/*.cpp`, `src/controller/*.cpp` -> `thermal_core` shared library
-- `src/service/*.cpp` -> `RDKThermalSensorService` executable
-
-While those directories are empty, the corresponding targets are **skipped**
-(CMake prints a status message), so the skeleton configures and builds cleanly.
-Add sources and re-run the build - the targets appear automatically with no
-CMake edits required.
+This module relies on UT-Core / UT-Control headers and libraries. Ensure all
+required packages for UT-Core are installed. See:
+[Packages for ut-core](https://github.com/rdkcentral/ut-core/wiki/UT-Core-Building-using-Docker-or-Vagrant#script-for-installing-basic-packages-for-ut-core)
 
 ### Clone the Repository
 
 ```bash
-git clone https://git@github.com:rdkcentral/rdk-halif-aidl-vcomponent-thermal-sensor.git
+git clone https://github.com/rdkcentral/rdk-halif-aidl-vcomponent-thermal-sensor.git
 
 cd rdk-halif-aidl-vcomponent-thermal-sensor
 ```
 
 ### Environment variables
 
-The build is driven by `./build.sh` in this repository. It uses (or defaults) the following environment variables:
+The build is driven by `./build.sh` in this repository. It uses, or defaults
+to, the following environment variables:
 
-- `UT_CORE_VERSION`: Specific version of UT-Core to build. If not set, the script checks out the latest tag.
-- `RDK_HALIF_AIDL_VERSION`: Git ref used if the script must clone `rdk-halif-aidl`. The script defaults to `main`.
+- `UT_CORE_VERSION`: Specific version of UT-Core to build. If not set, the
+  script checks out the latest tag.
+- `RDK_HALIF_AIDL_VERSION`: Git ref used if the script must clone
+  `rdk-halif-aidl`. The script defaults to `main`.
 
 Example:
 
@@ -75,32 +61,56 @@ export UT_CORE_VERSION=5.1.0
 export RDK_HALIF_AIDL_VERSION=0.22.0
 ```
 
+### Build command (Target Linux)
 
-## Build
+From the repository root:
 
-```sh
+```bash
 ./build.sh Target=linux
 ```
 
-Optional debug logging:
+At a high level, the `build.sh` script:
 
-```sh
-./build.sh Target=linux HAL_DBG_LEVEL=DEBUG
+1. Builds the required HALIF Binder tools and HALIF `common`, `sensor`, and
+   `bootreason` modules.
+2. Stages Linux Binder service-manager binaries, headers, libraries, and HALIF
+   libraries into `build/usr`.
+3. Clones and builds `ut-core` (checked out to `UT_CORE_VERSION`) and builds
+   the UT Control library.
+4. Builds the Thermal Sensor service using CMake. The service executable is
+   named `RDKThermalSensorService`.
+
+## Run Thermal Sensor
+
+### Run the service on a target device
+
+To run the Thermal Sensor Binder service:
+
+1. Copy the repository's `build/` folder onto the target device, for example
+   using `scp`, or otherwise ensure the built binary and
+   `vcomponent_configurations/` directory are present on the target filesystem.
+2. Run the Thermal Sensor service binary.
+
+The service executable is named:
+
+- `RDKThermalSensorService`
+
+### Command line interface
+
+The Thermal Sensor service supports the following command line flags:
+
+- `--hfp <path>`: Optional HFP YAML path.  
+  Default: `vcomponent_configurations/hfp-sensor-thermal.yaml`
+- `--port <port>`: Optional UT ControlPlane port to listen on.  
+  Default: `8085`
+
+Example:
+
+```bash
+./RDKThermalSensorService \
+  --hfp vcomponent_configurations/hfp-sensor-thermal.yaml \
+  --port 8085
 ```
 
-Other entry points:
-
-```sh
-./build.sh clean        # remove build folder
-./build.sh dist_clean   # remove build + checked-out dependencies
-./build.sh help
-```
-
-Artifacts are produced in `./build/` and installed into `./build/out/`.
-
-## Adding the implementation
-
-1. Add headers under `include/{aidl,controller,utility,common}/`.
-2. Add sources under `src/{aidl,controller,utility}/` (library) and
-   `src/service/` (service `main()`).
-3. Re-run `./build.sh Target=linux`.
+If `--help` (or `-h`) is provided, or if an unknown argument is provided, the
+service prints usage and exits with failure.
