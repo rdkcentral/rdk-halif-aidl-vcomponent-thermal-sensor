@@ -26,7 +26,7 @@ Thermal Sensor service name, and then joins the Binder thread pool.
 | **UT-Core** | RDK Unified Test Core Framework |
 | **UT ControlPlane** | UT-Core / UT-Control control plane for receiving YAML/KVP control messages |
 | **VTS** | Vendor Test Suite |
-| **YAML** | Yet Another Markup Language (configuration format) |
+| **YAML** | YAML Ain’t Markup Language (configuration format) |
 
 ## Build RDKThermalSensorService
 
