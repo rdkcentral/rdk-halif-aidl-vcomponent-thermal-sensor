@@ -46,9 +46,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
+#include <cerrno>
 #include <string>
-#include <sys/wait.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <thread>
 #include <vector>
 
@@ -69,7 +70,9 @@ constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensor>";
 constexpr int kUtWorkerIdleSleepMs = 50;
 constexpr const char* kThermalShutdownReason = "thermal_shutdown";
 constexpr std::size_t kBootReasonMaxBytes = 64U;
-constexpr const char* kSystemPoweroffCommand = "systemctl --no-block poweroff";
+constexpr const char* kSystemctlPath = "/bin/systemctl";
+constexpr const char* kSystemctlPoweroffArgument = "poweroff";
+constexpr const char* kSystemctlNoBlockArgument = "--no-block";
 
 int stateSeverity(State state)
 {
@@ -529,43 +532,44 @@ void ThermalSensor::recordThermalShutdownReason(const std::string& reasonString)
 
 void ThermalSensor::requestSystemPoweroff()
 {
-    // systemctl delegates shutdown sequencing to systemd. It is intentionally
-    // executed only by the thermal HAL; listeners receive the event solely to
-    // flush time-critical state and must not manage the device power transition.
-    LOGF_INFO("%s: executing autonomous power-off command: %s", logPrefix, kSystemPoweroffCommand);
+    // Use an absolute executable path and explicit argv so this critical path
+    // neither invokes a shell nor relies on PATH. The parent intentionally
+    // does not wait: systemctl is asked to return after queuing the power-off.
+    LOGF_INFO(
+        "%s: launching autonomous power-off command: %s %s %s",
+        logPrefix,
+        kSystemctlPath,
+        kSystemctlNoBlockArgument,
+        kSystemctlPoweroffArgument);
 
-    const int result = std::system(kSystemPoweroffCommand);
-    if (result == -1)
+    const pid_t childPid = fork();
+    if (childPid < 0)
     {
         LOGF_ERROR(
-            "%s: autonomous power-off command could not be executed",
-            logPrefix);
-    }
-    else if (WIFEXITED(result))
-    {
-        const int exitStatus = WEXITSTATUS(result);
-        if (exitStatus != EXIT_SUCCESS)
-        {
-            LOGF_ERROR(
-                "%s: autonomous power-off command exited with code=%d",
-                logPrefix,
-                exitStatus);
-        }
-    }
-    else if (WIFSIGNALED(result))
-    {
-        LOGF_ERROR(
-            "%s: autonomous power-off command terminated by signal=%d",
+            "%s: could not fork autonomous power-off command: errno=%d",
             logPrefix,
-            WTERMSIG(result));
+            errno);
+        return;
     }
-    else
+
+    if (childPid == 0)
     {
-        LOGF_ERROR(
-            "%s: autonomous power-off command returned unexpected wait status=%d",
-            logPrefix,
-            result);
+        execl(
+            kSystemctlPath,
+            kSystemctlPath,
+            kSystemctlNoBlockArgument,
+            kSystemctlPoweroffArgument,
+            static_cast<char*>(nullptr));
+
+        // exec only returns when launch fails. _exit prevents child cleanup
+        // handlers from running in the forked copy of this Binder service.
+        _exit(127);
     }
+
+    LOGF_INFO(
+        "%s: autonomous power-off command launched with pid=%ld",
+        logPrefix,
+        static_cast<long>(childPid));
 }
 
 android::binder::Status ThermalSensor::registerEventListener(
