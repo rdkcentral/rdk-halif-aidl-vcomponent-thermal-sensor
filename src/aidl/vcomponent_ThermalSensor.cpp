@@ -69,7 +69,7 @@ constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensor>";
 constexpr int kUtWorkerIdleSleepMs = 50;
 constexpr const char* kThermalShutdownReason = "thermal_shutdown";
 constexpr std::size_t kBootReasonMaxBytes = 64U;
-constexpr const char* kSystemPoweroffCommand = "systemctl poweroff";
+constexpr const char* kSystemPoweroffCommand = "systemctl --no-block poweroff";
 
 int stateSeverity(State state)
 {
