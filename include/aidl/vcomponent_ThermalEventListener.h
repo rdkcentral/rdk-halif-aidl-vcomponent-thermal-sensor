@@ -31,6 +31,9 @@
  *     IThermalSensor::registerEventListener(IThermalEventListener)
  *
  * The callback logs received ActionEvent payload details for observability.
+ * When CRITICAL_SHUTDOWN_IMMINENT is received, clients may only perform
+ * time-critical cleanup, such as flushing caches or persisting critical state;
+ * the thermal policy HAL records the cause and manages device power-off.
  */
 
 #include <com/rdk/hal/sensor/thermal/ActionEvent.h>
@@ -53,7 +56,8 @@ namespace thermal
  * @brief Minimal IThermalEventListener implementation for local clients/tests.
  *
  * This listener is intentionally thin: it acknowledges callback delivery and
- * logs the ActionEvent fields without adding non-AIDL behavior.
+ * logs the ActionEvent fields without adding non-AIDL behavior. Clients must
+ * not attempt to reboot or power off the device in response to a thermal event.
  */
 class ThermalEventListener final : public BnThermalEventListener
 {
