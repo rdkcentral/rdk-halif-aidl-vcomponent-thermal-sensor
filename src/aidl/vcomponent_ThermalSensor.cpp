@@ -583,10 +583,11 @@ void ThermalSensor::requestSystemPoweroff()
 
     // This child only performs the second fork and immediately exits. Reap it
     // before returning; retry when an unrelated signal interrupts waitpid.
+    int launcherStatus = 0;
     pid_t reapedPid;
     do
     {
-        reapedPid = waitpid(childPid, nullptr, 0);
+        reapedPid = waitpid(childPid, &launcherStatus, 0);
     } while (reapedPid == -1 && errno == EINTR);
 
     if (reapedPid == -1)
@@ -599,10 +600,40 @@ void ThermalSensor::requestSystemPoweroff()
         return;
     }
 
-    LOGF_INFO(
-        "%s: autonomous power-off command launched through reaped launcher pid=%ld",
+    if (WIFEXITED(launcherStatus) && WEXITSTATUS(launcherStatus) == 0)
+    {
+        LOGF_INFO(
+            "%s: autonomous power-off command launcher completed successfully pid=%ld",
+            logPrefix,
+            static_cast<long>(childPid));
+        return;
+    }
+
+    if (WIFEXITED(launcherStatus))
+    {
+        LOGF_ERROR(
+            "%s: autonomous power-off command launcher failed pid=%ld exitStatus=%d",
+            logPrefix,
+            static_cast<long>(childPid),
+            WEXITSTATUS(launcherStatus));
+        return;
+    }
+
+    if (WIFSIGNALED(launcherStatus))
+    {
+        LOGF_ERROR(
+            "%s: autonomous power-off command launcher was terminated pid=%ld signal=%d",
+            logPrefix,
+            static_cast<long>(childPid),
+            WTERMSIG(launcherStatus));
+        return;
+    }
+
+    LOGF_ERROR(
+        "%s: autonomous power-off command launcher ended unexpectedly pid=%ld status=%d",
         logPrefix,
-        static_cast<long>(childPid));
+        static_cast<long>(childPid),
+        launcherStatus);
 }
 
 android::binder::Status ThermalSensor::registerEventListener(
