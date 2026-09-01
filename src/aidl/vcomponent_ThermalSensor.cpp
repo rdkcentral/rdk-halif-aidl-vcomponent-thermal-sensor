@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
 #include <vector>
 
@@ -534,10 +535,34 @@ void ThermalSensor::requestSystemPoweroff()
     LOGF_INFO("%s: executing autonomous power-off command: %s", logPrefix, kSystemPoweroffCommand);
 
     const int result = std::system(kSystemPoweroffCommand);
-    if (result != EXIT_SUCCESS)
+    if (result == -1)
     {
         LOGF_ERROR(
-            "%s: autonomous power-off command failed with status=%d",
+            "%s: autonomous power-off command could not be executed",
+            logPrefix);
+    }
+    else if (WIFEXITED(result))
+    {
+        const int exitStatus = WEXITSTATUS(result);
+        if (exitStatus != EXIT_SUCCESS)
+        {
+            LOGF_ERROR(
+                "%s: autonomous power-off command exited with code=%d",
+                logPrefix,
+                exitStatus);
+        }
+    }
+    else if (WIFSIGNALED(result))
+    {
+        LOGF_ERROR(
+            "%s: autonomous power-off command terminated by signal=%d",
+            logPrefix,
+            WTERMSIG(result));
+    }
+    else
+    {
+        LOGF_ERROR(
+            "%s: autonomous power-off command returned unexpected wait status=%d",
             logPrefix,
             result);
     }
