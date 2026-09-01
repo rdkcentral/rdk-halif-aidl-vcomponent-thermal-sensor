@@ -537,6 +537,15 @@ void ThermalSensor::requestSystemPoweroff()
     // neither invokes a shell nor relies on PATH. A double-fork detaches
     // systemctl from the HAL, while the parent reaps the short-lived launcher
     // child so no zombie can remain if power-off is delayed or fails.
+    if (access(kSystemctlPath, X_OK) != 0)
+     {
+         LOGF_ERROR(
+             "%s: autonomous power-off command is unavailable at %s: errno=%d",
+             logPrefix,
+             kSystemctlPath,
+             errno);
+         return;
+     }
     LOGF_INFO(
         "%s: launching autonomous power-off command: %s %s %s",
         logPrefix,
@@ -551,6 +560,7 @@ void ThermalSensor::requestSystemPoweroff()
             "%s: could not fork autonomous power-off command: errno=%d",
             logPrefix,
             errno);
+        m_shutdownScheduled = false;
         return;
     }
 
@@ -616,6 +626,7 @@ void ThermalSensor::requestSystemPoweroff()
             logPrefix,
             static_cast<long>(childPid),
             WEXITSTATUS(launcherStatus));
+        m_shutdownScheduled = false;
         return;
     }
 
