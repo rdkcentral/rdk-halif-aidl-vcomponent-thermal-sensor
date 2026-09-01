@@ -49,6 +49,7 @@
 #include <cerrno>
 #include <string>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <thread>
 #include <vector>
@@ -533,8 +534,9 @@ void ThermalSensor::recordThermalShutdownReason(const std::string& reasonString)
 void ThermalSensor::requestSystemPoweroff()
 {
     // Use an absolute executable path and explicit argv so this critical path
-    // neither invokes a shell nor relies on PATH. The parent intentionally
-    // does not wait: systemctl is asked to return after queuing the power-off.
+    // neither invokes a shell nor relies on PATH. A double-fork detaches
+    // systemctl from the HAL, while the parent reaps the short-lived launcher
+    // child so no zombie can remain if power-off is delayed or fails.
     LOGF_INFO(
         "%s: launching autonomous power-off command: %s %s %s",
         logPrefix,
@@ -554,6 +556,19 @@ void ThermalSensor::requestSystemPoweroff()
 
     if (childPid == 0)
     {
+        const pid_t systemctlPid = fork();
+        if (systemctlPid < 0)
+        {
+            _exit(127);
+        }
+
+        if (systemctlPid > 0)
+        {
+            // The parent below reaps this launcher process. The systemctl
+            // grandchild is re-parented to init (or a configured subreaper).
+            _exit(0);
+        }
+
         execl(
             kSystemctlPath,
             kSystemctlPath,
@@ -566,8 +581,26 @@ void ThermalSensor::requestSystemPoweroff()
         _exit(127);
     }
 
+    // This child only performs the second fork and immediately exits. Reap it
+    // before returning; retry when an unrelated signal interrupts waitpid.
+    pid_t reapedPid;
+    do
+    {
+        reapedPid = waitpid(childPid, nullptr, 0);
+    } while (reapedPid == -1 && errno == EINTR);
+
+    if (reapedPid == -1)
+    {
+        LOGF_ERROR(
+            "%s: could not reap autonomous power-off launcher pid=%ld: errno=%d",
+            logPrefix,
+            static_cast<long>(childPid),
+            errno);
+        return;
+    }
+
     LOGF_INFO(
-        "%s: autonomous power-off command launched with pid=%ld",
+        "%s: autonomous power-off command launched through reaped launcher pid=%ld",
         logPrefix,
         static_cast<long>(childPid));
 }
