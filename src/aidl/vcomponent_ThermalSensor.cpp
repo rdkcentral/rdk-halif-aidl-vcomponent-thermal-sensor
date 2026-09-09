@@ -40,14 +40,17 @@
 #include <binder/Status.h>
 #include <com/rdk/hal/bootreason/BootCause.h>
 #include <com/rdk/hal/bootreason/IBootReason.h>
-#include <com/rdk/hal/bootreason/ResetType.h>
 #include <utils/String16.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cerrno>
 #include <string>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <thread>
 #include <vector>
 
@@ -66,8 +69,11 @@ namespace
 {
 constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensor>";
 constexpr int kUtWorkerIdleSleepMs = 50;
-constexpr const char* kThermalRebootReason = "thermal_shutdown";
+constexpr const char* kThermalShutdownReason = "thermal_shutdown";
 constexpr std::size_t kBootReasonMaxBytes = 64U;
+constexpr const char* kSystemctlPath = "/bin/systemctl";
+constexpr const char* kSystemctlPoweroffArgument = "poweroff";
+constexpr const char* kSystemctlNoBlockArgument = "--no-block";
 
 int stateSeverity(State state)
 {
@@ -399,9 +405,9 @@ void ThermalSensor::applyTemperatureSample(
         if (event.state == State::CRITICAL_SHUTDOWN_IMMINENT)
         {
             LOGF_INFO(
-                "%s: aggregate state entered CRITICAL_SHUTDOWN_IMMINENT; requesting BootReason reboot",
+                "%s: aggregate state entered CRITICAL_SHUTDOWN_IMMINENT; initiating autonomous power-off",
                 logPrefix);
-            scheduleThermalReboot(kThermalRebootReason);
+            scheduleThermalShutdown(kThermalShutdownReason);
         }
     }
 }
@@ -439,33 +445,37 @@ void ThermalSensor::notifyListeners(const ActionEvent& event)
     }
 }
 
-void ThermalSensor::scheduleThermalReboot(const std::string& reasonString)
+void ThermalSensor::scheduleThermalShutdown(const std::string& reasonString)
 {
     bool expected = false;
-    if (!m_rebootScheduled.compare_exchange_strong(expected, true))
+    if (!m_shutdownScheduled.compare_exchange_strong(expected, true))
     {
         LOGF_INFO(
-            "%s: thermal reboot already scheduled; ignoring duplicate request",
+            "%s: thermal shutdown already scheduled; ignoring duplicate request",
             logPrefix);
         return;
     }
 
     LOGF_INFO(
-        "%s: requesting thermal software reboot immediately",
+        "%s: recording thermal shutdown reason before autonomous power-off",
         logPrefix);
-    requestThermalReboot(reasonString);
+    recordThermalShutdownReason(reasonString);
+
+    // Do not let Boot Reason availability prevent hardware protection. The
+    // thermal HAL owns the shutdown action and always requests power-off after
+    // attempting to persist the diagnostic cause.
+    requestSystemPoweroff();
 }
 
-void ThermalSensor::requestThermalReboot(const std::string& reasonString)
+void ThermalSensor::recordThermalShutdownReason(const std::string& reasonString)
 {
     using com::rdk::hal::bootreason::BootCause;
     using com::rdk::hal::bootreason::IBootReason;
-    using com::rdk::hal::bootreason::ResetType;
 
     if (reasonString.empty() || reasonString.size() > kBootReasonMaxBytes)
     {
         LOGF_ERROR(
-            "%s: refusing BootReason reboot because reason length=%zu is outside the allowed range 1..%zu",
+            "%s: cannot record thermal shutdown reason because length=%zu is outside the allowed range 1..%zu",
             logPrefix,
             reasonString.size(),
             kBootReasonMaxBytes);
@@ -475,7 +485,7 @@ void ThermalSensor::requestThermalReboot(const std::string& reasonString)
     android::sp<android::IServiceManager> serviceManager = android::defaultServiceManager();
     if (!serviceManager.get())
     {
-        LOGF_ERROR("%s: cannot request thermal reboot because Binder service manager is unavailable", logPrefix);
+        LOGF_ERROR("%s: cannot record thermal shutdown reason because Binder service manager is unavailable", logPrefix);
         return;
     }
 
@@ -485,7 +495,7 @@ void ThermalSensor::requestThermalReboot(const std::string& reasonString)
     if (!binder.get())
     {
         LOGF_ERROR(
-            "%s: BootReason service '%s' is unavailable; thermal reboot request was not sent",
+            "%s: BootReason service '%s' is unavailable; thermal shutdown cause cannot be persisted",
             logPrefix,
             bootServiceName.c_str());
         return;
@@ -503,35 +513,138 @@ void ThermalSensor::requestThermalReboot(const std::string& reasonString)
 
     const android::String16 binderReason(reasonString.c_str());
 
-    // Record THERMAL_RESET first so BootReason persists the correct cause for
-    // the subsequent software reboot instead of falling back to WARM_RESET.
+    // Preserve the next-boot diagnostic cause before the HAL initiates its
+    // independent system power-off sequence.
     const android::binder::Status causeStatus =
         boot->setBootCause(BootCause::THERMAL_RESET, binderReason);
     if (!causeStatus.isOk())
     {
         LOGF_ERROR(
-            "%s: BootReason setBootCause(THERMAL_RESET) failed; reboot request suppressed",
-            logPrefix);
-        return;
-    }
-
-    // Request the normal software reboot after listeners have already received
-    // the critical thermal event. The Binder success only means BootReason
-    // accepted the request; platform reboot completion remains best effort.
-    const android::binder::Status rebootStatus =
-        boot->reboot(ResetType::SOFTWARE_REBOOT, binderReason);
-    if (!rebootStatus.isOk())
-    {
-        LOGF_ERROR(
-            "%s: BootReason reboot(SOFTWARE_REBOOT) failed after setting THERMAL_RESET",
+            "%s: BootReason setBootCause(THERMAL_RESET) failed; power-off will still be requested",
             logPrefix);
         return;
     }
 
     LOGF_INFO(
-        "%s: requested thermal software reboot through BootReason with reason=%s",
+        "%s: persisted BootCause::THERMAL_RESET through BootReason with reason=%s",
         logPrefix,
         reasonString.c_str());
+}
+
+void ThermalSensor::requestSystemPoweroff()
+{
+    // Use an absolute executable path and explicit argv so this critical path
+    // neither invokes a shell nor relies on PATH. A double-fork detaches
+    // systemctl from the HAL, while the parent reaps the short-lived launcher
+    // child so no zombie can remain if power-off is delayed or fails.
+    if (access(kSystemctlPath, X_OK) != 0)
+     {
+         LOGF_ERROR(
+             "%s: autonomous power-off command is unavailable at %s: errno=%d",
+             logPrefix,
+             kSystemctlPath,
+             errno);
+         return;
+     }
+    LOGF_INFO(
+        "%s: launching autonomous power-off command: %s %s %s",
+        logPrefix,
+        kSystemctlPath,
+        kSystemctlNoBlockArgument,
+        kSystemctlPoweroffArgument);
+
+    const pid_t childPid = fork();
+    if (childPid < 0)
+    {
+        LOGF_ERROR(
+            "%s: could not fork autonomous power-off command: errno=%d",
+            logPrefix,
+            errno);
+        m_shutdownScheduled = false;
+        return;
+    }
+
+    if (childPid == 0)
+    {
+        const pid_t systemctlPid = fork();
+        if (systemctlPid < 0)
+        {
+            _exit(127);
+        }
+
+        if (systemctlPid > 0)
+        {
+            // The parent below reaps this launcher process. The systemctl
+            // grandchild is re-parented to init (or a configured subreaper).
+            _exit(0);
+        }
+
+        execl(
+            kSystemctlPath,
+            kSystemctlPath,
+            kSystemctlNoBlockArgument,
+            kSystemctlPoweroffArgument,
+            static_cast<char*>(nullptr));
+
+        // exec only returns when launch fails. _exit prevents child cleanup
+        // handlers from running in the forked copy of this Binder service.
+        _exit(127);
+    }
+
+    // This child only performs the second fork and immediately exits. Reap it
+    // before returning; retry when an unrelated signal interrupts waitpid.
+    int launcherStatus = 0;
+    pid_t reapedPid;
+    do
+    {
+        reapedPid = waitpid(childPid, &launcherStatus, 0);
+    } while (reapedPid == -1 && errno == EINTR);
+
+    if (reapedPid == -1)
+    {
+        LOGF_ERROR(
+            "%s: could not reap autonomous power-off launcher pid=%ld: errno=%d",
+            logPrefix,
+            static_cast<long>(childPid),
+            errno);
+        return;
+    }
+
+    if (WIFEXITED(launcherStatus) && WEXITSTATUS(launcherStatus) == 0)
+    {
+        LOGF_INFO(
+            "%s: autonomous power-off command launcher completed successfully pid=%ld",
+            logPrefix,
+            static_cast<long>(childPid));
+        return;
+    }
+
+    if (WIFEXITED(launcherStatus))
+    {
+        LOGF_ERROR(
+            "%s: autonomous power-off command launcher failed pid=%ld exitStatus=%d",
+            logPrefix,
+            static_cast<long>(childPid),
+            WEXITSTATUS(launcherStatus));
+        m_shutdownScheduled = false;
+        return;
+    }
+
+    if (WIFSIGNALED(launcherStatus))
+    {
+        LOGF_ERROR(
+            "%s: autonomous power-off command launcher was terminated pid=%ld signal=%d",
+            logPrefix,
+            static_cast<long>(childPid),
+            WTERMSIG(launcherStatus));
+        return;
+    }
+
+    LOGF_ERROR(
+        "%s: autonomous power-off command launcher ended unexpectedly pid=%ld status=%d",
+        logPrefix,
+        static_cast<long>(childPid),
+        launcherStatus);
 }
 
 android::binder::Status ThermalSensor::registerEventListener(

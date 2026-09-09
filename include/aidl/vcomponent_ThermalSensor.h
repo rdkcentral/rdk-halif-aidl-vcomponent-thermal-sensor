@@ -31,8 +31,9 @@
  * contract. Runtime sensor records are initialized from the selected HFP YAML
  * profile. The UT control plane listens for IThermalSensor temperature_update
  * messages, updates in-memory telemetry, notifies listeners on aggregate state
- * transitions, and requests a BootReason software reboot when the aggregate
- * policy enters CRITICAL_SHUTDOWN_IMMINENT.
+ * transitions, persists BootCause::THERMAL_RESET through Boot Reason, and
+ * autonomously executes systemctl poweroff when the aggregate policy enters
+ * CRITICAL_SHUTDOWN_IMMINENT.
  */
 
 #include <com/rdk/hal/sensor/thermal/ActionEvent.h>
@@ -183,8 +184,8 @@ private:
      * @brief Poll the UT control-plane queue and apply thermal updates.
      *
      * The worker consumes temperature_update commands and delegates all policy
-     * evaluation to applyTemperatureSample(). Reboot escalation is requested
-     * from the state-transition path after listener notification.
+     * evaluation to applyTemperatureSample(). The state-transition path
+     * notifies listeners, persists the thermal cause, and requests power-off.
      */
     void utWorkerLoop();
 
@@ -228,27 +229,35 @@ private:
     void notifyListeners(const ActionEvent& event);
 
     /**
-     * @brief Request a thermal software reboot once for the current shutdown event.
+     * @brief Initiate a thermal shutdown once for the current shutdown event.
      *
      * Duplicate CRITICAL_SHUTDOWN_IMMINENT transitions are suppressed so the
-     * BootReason service receives at most one reboot request for this service
-     * lifetime.
+     * shutdown sequence is initiated at most once for this service lifetime.
      *
      * @param[in] reasonString Stable BootReason string persisted for diagnosis.
      */
-    void scheduleThermalReboot(const std::string& reasonString);
+    void scheduleThermalShutdown(const std::string& reasonString);
 
     /**
-     * @brief Request a thermal software reboot through the BootReason service.
+     * @brief Persist the thermal shutdown cause through the BootReason service.
      *
      * The helper obtains the published IBootReason Binder service, records
-     * BootCause::THERMAL_RESET, then requests ResetType::SOFTWARE_REBOOT using
-     * the same bounded non-empty reason string. It performs no thermal state
-     * mutation and must be called outside m_mutex because Binder calls can block.
+     * BootCause::THERMAL_RESET using the bounded non-empty reason string. It
+     * never manages the device power transition and must be called outside
+     * m_mutex because Binder calls can block.
      *
      * @param[in] reasonString Stable BootReason string persisted for diagnosis.
      */
-    void requestThermalReboot(const std::string& reasonString);
+    void recordThermalShutdownReason(const std::string& reasonString);
+
+    /**
+     * @brief Request device power-off through systemd.
+     *
+     * This executes `systemctl poweroff` after the Boot Reason persistence
+     * attempt. It is deliberately independent from the persistence result so a
+     * transient Boot Reason failure cannot prevent thermal protection.
+     */
+    void requestSystemPoweroff();
 
     mutable std::mutex m_mutex;
 
@@ -260,12 +269,12 @@ private:
     std::atomic<bool> m_stopUtWorker{false};
     std::thread m_utWorkerThread;
 
-    std::atomic<bool> m_rebootScheduled{false};
+    std::atomic<bool> m_shutdownScheduled{false};
 
     // UT control plane owned by the service for IThermalSensor temperature_update
     // messages. Samples entering CRITICAL_SHUTDOWN_IMMINENT flow through the
-    // normal policy path, notify listeners, then request a BootReason reboot
-    // without any intentional delay.
+    // normal policy path, notify listeners for time-critical cleanup, persist
+    // THERMAL_RESET, then autonomously invoke systemctl poweroff.
     vcomponent::thermal::controller::ThermalUtController m_ut;
 };
 
