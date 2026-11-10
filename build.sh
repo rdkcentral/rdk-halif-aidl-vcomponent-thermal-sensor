@@ -29,14 +29,14 @@ RESET='\033[0m'
 
 declare -r TOP=`dirname $(realpath $0)`
 declare -r HALIF_VERSION=current
-RDK_HALIF_AIDL_VERSION="${RDK_HALIF_AIDL_VERSION:-"main"}"
+RDK_HALIF_AIDL_VERSION="${RDK_HALIF_AIDL_VERSION:-"0.23.0"}"
 
 # REQUIRED: thermal AIDL is part of HALIF 'sensor' module
 VCOMPONENT="${VCOMPONENT:-sensor}"
 
-VCOMPONENT_VERSION="${VCOMPONENT_VERSION:-0.2.0.0}"
-VCOMPONENT_INCLUDE_VERSION="${VCOMPONENT_INCLUDE_VERSION:-0.2.0.0}"
-BOOTREASON_VERSION="${BOOTREASON_VERSION:-0.1.0.0}"
+VCOMPONENT_VERSION="${VCOMPONENT_VERSION:-0.3.0.0}"
+VCOMPONENT_INCLUDE_VERSION="${VCOMPONENT_INCLUDE_VERSION:-0.3.0.0}"
+BOOTREASON_VERSION="${BOOTREASON_VERSION:-0.2.0.0}"
 
 declare -A HALIF_COMPONENTS=(
   [sensor]="current"
@@ -101,7 +101,7 @@ generate_hal_interfaces()
     ./build_binder.sh || { echo -e "${BOLD}* ${RED}Failed to build binder tools. Exiting.${RESET}"; exit 1; }
 
     # Thermal depends on HALIF 'common' (PropertyValue.h)
-    ./build_modules.sh "common" --version "${VCOMPONENT_VERSION}" || {
+    ./build_modules.sh "common" --version "${VCOMPONENT_INCLUDE_VERSION}" || {
         echo -e "${BOLD}* ${RED}Failed to build HALIF modules (common). Exiting.${RESET}"
         exit 1
     }
@@ -116,7 +116,7 @@ generate_hal_interfaces()
     fi
 
     # ---- pass include path only to this command invocation ----
-    COMMON_VER_INC="${RDK_HAL_DIR}/common/${VCOMPONENT_VERSION}/include"
+    COMMON_VER_INC="${RDK_HAL_DIR}/common/${VCOMPONENT_INCLUDE_VERSION}/include"
 
     CFLAGS="-I${COMMON_VER_INC} ${CFLAGS:-}" \
     CXXFLAGS="-I${COMMON_VER_INC} ${CXXFLAGS:-}" \
@@ -253,7 +253,7 @@ prepare_common_dir()
     cp -r "${SRC_COMMON_DIR}" "${DEST_COMMON_DIR}" || { echo -e "${RED}Failed to copy common directory!${RESET}"; exit 1; }
 
     # Versioned include root (needed for PropertyValue.h)
-    COMMON_INCLUDE_DIR="${DEST_COMMON_DIR}/${VCOMPONENT_VERSION}/include"
+    COMMON_INCLUDE_DIR="${DEST_COMMON_DIR}/${VCOMPONENT_INCLUDE_VERSION}/include"
     echo -e "${GREEN}COMMON_INCLUDE_DIR=${COMMON_INCLUDE_DIR}${RESET}"
 
     if [ ! -f "${COMMON_INCLUDE_DIR}/com/rdk/hal/PropertyValue.h" ]; then
@@ -264,7 +264,7 @@ prepare_common_dir()
     # Stage into HALIF global include root so HALIF module build can include <com/...>
     HALIF_GLOBAL_INCLUDE_DIR="${RDK_HAL_DIR}/out/build/include"
     mkdir -p "${HALIF_GLOBAL_INCLUDE_DIR}" || exit 1
-    cp -a "${SRC_COMMON_DIR}/${VCOMPONENT_VERSION}/include/com" "${HALIF_GLOBAL_INCLUDE_DIR}/" || exit 1
+    cp -a "${SRC_COMMON_DIR}/${VCOMPONENT_INCLUDE_VERSION}/include/com" "${HALIF_GLOBAL_INCLUDE_DIR}/" || exit 1
 }
 
 ###############################################################################
@@ -285,6 +285,7 @@ build_ThermalSensor()
         -DHALIF_COMMON_INCLUDE_DIR="${HALIF_COMMON_INCLUDE_DIR}" \
         -DCOMMON_INCLUDE_DIR="${COMMON_INCLUDE_DIR}" \
         -DVCOMPONENT_VERSION="${VCOMPONENT_VERSION}" \
+        -DVCOMPONENT_INCLUDE_VERSION="${VCOMPONENT_INCLUDE_VERSION}" \
         -DBOOTREASON_VERSION="${BOOTREASON_VERSION}" \
         "${EXTRA_CMAKE_ARGS[@]}"
 

@@ -36,7 +36,7 @@
  *       sensor_reading_range_celsius { min, max }
  *       operational_temperature_celsius { min, max }
  *       triggers { recovered, exceeded, shutdown }
- *       policy { shutdown_min_downtime_s, recovery { strategy, min_cooldown_seconds } }
+ *       policy { shutdown_min_downtime_s, max_state_events_per_minute }
  *       vendor { vendorCode, vendorInfo }
  *
  * Keeping the in-memory structure close to the YAML makes the parser
@@ -65,8 +65,7 @@ struct ThermalRange
 /**
  * @brief Vendor thermal policy trigger points in degrees Celsius.
  *
- * The HFP policy convention is recovered < exceeded < shutdown. The current
- * parser stores supplied values but does not enforce this ordering.
+ * The parser enforces the HFP convention recovered < exceeded < shutdown.
  */
 struct ThermalTriggers
 {
@@ -76,21 +75,12 @@ struct ThermalTriggers
 };
 
 /**
- * @brief Vendor recovery strategy configuration.
- */
-struct ThermalRecoveryPolicy
-{
-    std::string strategy{"TIME_BASED"};
-    int32_t minCooldownSeconds{0};
-};
-
-/**
  * @brief Vendor thermal policy configuration.
  */
 struct ThermalPolicy
 {
     int32_t shutdownMinDowntimeSeconds{0};
-    ThermalRecoveryPolicy recovery;
+    int32_t maxStateEventsPerMinute{6};
 };
 
 /**

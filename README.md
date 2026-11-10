@@ -52,14 +52,36 @@ to, the following environment variables:
 - `UT_CORE_VERSION`: Specific version of UT-Core to build. If not set, the
   script checks out the latest tag.
 - `RDK_HALIF_AIDL_VERSION`: Git ref used if the script must clone
-  `rdk-halif-aidl`. The script defaults to `main`.
+  `rdk-halif-aidl`. The script defaults to `0.23.0`. An existing checkout is
+  reused without changing its Git ref; ensure it provides the matching snapshots.
 
 Example:
 
 ```bash
 export UT_CORE_VERSION=5.1.0
-export RDK_HALIF_AIDL_VERSION=0.22.0
+export RDK_HALIF_AIDL_VERSION=0.23.0
 ```
+
+The default released module snapshots are `sensor/0.3.0.0`,
+`common/0.3.0.0`, and `bootreason/0.2.0.0`. Their build overrides are
+`VCOMPONENT_VERSION`, `VCOMPONENT_INCLUDE_VERSION` (common), and
+`BOOTREASON_VERSION`, respectively; keep headers and libraries aligned.
+
+Each configured sensor has an independent state machine. Critical temperature
+recovers directly to `NORMAL` only below its recovered threshold; shutdown is
+terminal. Events always identify the affected sensor, even when the worst
+current state returned by `getCurrentThermalState()` does not change.
+`policy.max_state_events_per_minute` must be positive and defaults to 6 when
+omitted. Events above that rolling 60-second limit are coalesced to the current
+sensor state and dispatched when the window permits, without requiring another
+sample. Shutdown events bypass the limit and precede BootReason persistence and
+the existing autonomous power-off request.
+
+This is an emulated service: initial readings still come from the configured
+operational range, and subsequent readings come from UT control-plane messages,
+not hardware sampling. Startup state is evaluated from those initial readings.
+`shutdown_min_downtime_s` remains metadata; enforcing device restart timing
+requires platform support.
 
 ### Build command (Target Linux)
 

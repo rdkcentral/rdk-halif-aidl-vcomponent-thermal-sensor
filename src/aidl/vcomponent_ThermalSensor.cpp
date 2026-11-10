@@ -26,7 +26,7 @@
  * Sensor records are initialized from the selected HFP YAML profile. Runtime
  * control-plane orchestration accepts IThermalSensor temperature_update messages
  * on the configured UT port, updates telemetry/state in memory, notifies
- * listeners on aggregate state transitions, and requests the separate
+ * listeners on per-sensor state transitions, and requests the separate
  * BootReason Binder service when thermal shutdown is imminent.
  */
 
@@ -69,6 +69,7 @@ namespace
 {
 constexpr const char* logPrefix = "[VDEVICE_THERMAL]<ThermalSensor>";
 constexpr int kUtWorkerIdleSleepMs = 50;
+constexpr std::int64_t kStateEventWindowMs = 60000;
 constexpr const char* kThermalShutdownReason = "thermal_shutdown";
 constexpr std::size_t kBootReasonMaxBytes = 64U;
 constexpr const char* kSystemctlPath = "/bin/systemctl";
@@ -83,18 +84,10 @@ int stateSeverity(State state)
             return 3;
         case State::CRITICAL_TEMPERATURE_EXCEEDED:
             return 2;
-        case State::CRITICAL_TEMPERATURE_RECOVERED:
-            return 1;
         case State::NORMAL:
         default:
             return 0;
     }
-}
-
-bool isActiveCriticalTemperatureState(State state)
-{
-    return state == State::CRITICAL_TEMPERATURE_EXCEEDED ||
-           state == State::CRITICAL_SHUTDOWN_IMMINENT;
 }
 
 State moreSevere(State left, State right)
@@ -110,12 +103,12 @@ TemperatureReading makeReadingFromConfig(
     TemperatureReading reading{};
     const std::string sensorName = config.sensorName.empty() ? config.id : config.sensorName;
 
-    reading.sensorName = android::String16(sensorName.c_str());
-    reading.location = android::String16(config.location.c_str());
+    reading.sensorName = sensorName;
+    reading.location = config.location;
     reading.temperatureCelsius = temperatureCelsius;
     reading.timestampMonotonicMs = timestampMs;
     reading.vendorCode = config.vendor.vendorCode;
-    reading.vendorInfo = android::String16(config.vendor.vendorInfo.c_str());
+    reading.vendorInfo = config.vendor.vendorInfo;
 
     return reading;
 }
@@ -150,6 +143,7 @@ ThermalSensor::ThermalSensor(
         static_cast<unsigned>(m_controlPort));
 
     initializeSensors(std::move(configuration));
+    flushPendingStateEvents();
 
     if (m_ut.init(m_controlPort, this))
     {
@@ -195,6 +189,7 @@ void ThermalSensor::initializeSensors(vcomponent::utility::ThermalHfpConfig conf
 {
     std::vector<SensorRuntime> sensors;
     sensors.reserve(configuration.sensors.size());
+    State aggregateState = State::NORMAL;
 
     const std::int64_t timestampMs = vcomponent::utility::monotonicTimestampMs();
     for (const auto& sensorConfig : configuration.sensors)
@@ -207,6 +202,9 @@ void ThermalSensor::initializeSensors(vcomponent::utility::ThermalHfpConfig conf
             initialTemperatureForSensor(sensorConfig),
             timestampMs);
 
+        runtime.state = evaluateSensorState(runtime, runtime.reading.temperatureCelsius);
+        runtime.stateChangedMonotonicMs = timestampMs;
+        aggregateState = moreSevere(aggregateState, runtime.state);
         sensors.push_back(runtime);
 
         LOGF_DEBUG(
@@ -221,14 +219,14 @@ void ThermalSensor::initializeSensors(vcomponent::utility::ThermalHfpConfig conf
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_sensors = std::move(sensors);
-        m_currentState = State::NORMAL;
+        m_currentState = aggregateState;
     }
 
     LOGF_INFO(
         "%s: loaded %zu configured thermal sensor(s); aggregate state=%s",
         logPrefix,
         configuration.sensors.size(),
-        toString(State::NORMAL).c_str());
+        toString(aggregateState).c_str());
 }
 
 void ThermalSensor::utWorkerLoop()
@@ -246,13 +244,64 @@ void ThermalSensor::utWorkerLoop()
         if (update.has_value())
         {
             handleControlPlaneUpdate(*update);
-            continue;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(kUtWorkerIdleSleepMs));
+        flushPendingStateEvents();
+        if (!update.has_value())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kUtWorkerIdleSleepMs));
+        }
     }
 
     LOGF_INFO("%s: control-plane worker stopped", logPrefix);
+}
+
+void ThermalSensor::flushPendingStateEvents()
+{
+    std::vector<ActionEvent> events;
+    const std::int64_t nowMs = vcomponent::utility::monotonicTimestampMs();
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto& runtime : m_sensors)
+        {
+            auto& times = runtime.emittedEventTimesMs;
+            while (!times.empty() && times.front() <= nowMs - kStateEventWindowMs)
+            {
+                times.pop_front();
+            }
+
+            if (runtime.state == runtime.lastEmittedState)
+            {
+                continue;
+            }
+
+            if (runtime.state != State::CRITICAL_SHUTDOWN_IMMINENT &&
+                times.size() >= static_cast<std::size_t>(runtime.config.policy.maxStateEventsPerMinute))
+            {
+                continue;
+            }
+
+            ActionEvent event{};
+            event.state = runtime.state;
+            event.timestampMonotonicMs = runtime.stateChangedMonotonicMs;
+            event.temperatureReading = runtime.reading;
+            events.push_back(event);
+            runtime.lastEmittedState = runtime.state;
+            times.push_back(nowMs);
+        }
+    }
+
+    bool shutdownImminent = false;
+    for (const auto& event : events)
+    {
+        notifyListeners(event);
+        shutdownImminent = shutdownImminent || event.state == State::CRITICAL_SHUTDOWN_IMMINENT;
+    }
+
+    if (shutdownImminent)
+    {
+        scheduleThermalShutdown(kThermalShutdownReason);
+    }
 }
 
 void ThermalSensor::handleControlPlaneUpdate(
@@ -275,7 +324,9 @@ State ThermalSensor::evaluateSensorState(const SensorRuntime& runtime, double te
 {
     const auto& triggers = runtime.config.triggers;
 
-    if (temperatureCelsius >= triggers.enteringCriticalShutdownCelsius)
+    // Shutdown is terminal for each sensor, not just for the aggregate query.
+    if (runtime.state == State::CRITICAL_SHUTDOWN_IMMINENT ||
+        temperatureCelsius >= triggers.enteringCriticalShutdownCelsius)
     {
         return State::CRITICAL_SHUTDOWN_IMMINENT;
     }
@@ -285,17 +336,15 @@ State ThermalSensor::evaluateSensorState(const SensorRuntime& runtime, double te
         return State::CRITICAL_TEMPERATURE_EXCEEDED;
     }
 
-    if (isActiveCriticalTemperatureState(runtime.state))
+    if (runtime.state == State::CRITICAL_TEMPERATURE_EXCEEDED)
     {
-        if (temperatureCelsius <= triggers.criticalTemperatureRecoveredCelsius)
+        if (temperatureCelsius < triggers.criticalTemperatureRecoveredCelsius)
         {
-            return State::CRITICAL_TEMPERATURE_RECOVERED;
+            return State::NORMAL;
         }
 
-        // Keep reporting a critical state while cooling through the hysteresis
-        // band between the recovery and exceeded thresholds. This prevents a
-        // premature NORMAL transition before the configured recovery point is
-        // reached.
+        // Hold the critical state through the hysteresis band, including
+        // equality with the recovered threshold.
         return State::CRITICAL_TEMPERATURE_EXCEEDED;
     }
 
@@ -313,9 +362,6 @@ void ThermalSensor::applyTemperatureSample(
         sensorNameOrId.c_str(),
         temperatureCelsius,
         static_cast<long long>(timestampMonotonicMs));
-
-    ActionEvent event{};
-    bool shouldNotify = false;
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -356,23 +402,17 @@ void ThermalSensor::applyTemperatureSample(
             (timestampMonotonicMs >= 0) ? timestampMonotonicMs : vcomponent::utility::monotonicTimestampMs();
 
         it->reading = makeReadingFromConfig(it->config, temperatureCelsius, effectiveTimestampMs);
-        it->state = evaluateSensorState(*it, temperatureCelsius);
+        const State nextState = evaluateSensorState(*it, temperatureCelsius);
+        if (nextState != it->state)
+        {
+            it->state = nextState;
+            it->stateChangedMonotonicMs = effectiveTimestampMs;
+        }
 
         State aggregateState = State::NORMAL;
         for (const auto& runtime : m_sensors)
         {
             aggregateState = moreSevere(aggregateState, runtime.state);
-        }
-
-        if (m_currentState == State::CRITICAL_SHUTDOWN_IMMINENT &&
-            aggregateState != State::CRITICAL_SHUTDOWN_IMMINENT)
-        {
-            LOGF_INFO(
-                "%s: suppressing aggregate transition from CRITICAL_SHUTDOWN_IMMINENT to %s for sensorNameOrId=%s",
-                logPrefix,
-                toString(aggregateState).c_str(),
-                sensorNameOrId.c_str());
-            aggregateState = State::CRITICAL_SHUTDOWN_IMMINENT;
         }
 
         LOGF_DEBUG(
@@ -383,33 +423,10 @@ void ThermalSensor::applyTemperatureSample(
             toString(aggregateState).c_str(),
             toString(m_currentState).c_str());
 
-        if (aggregateState != m_currentState)
-        {
-            m_currentState = aggregateState;
-
-            event.state = aggregateState;
-            event.timestampMonotonicMs = effectiveTimestampMs;
-            event.temperatureReading = it->reading;
-            shouldNotify = true;
-        }
+        m_currentState = aggregateState;
     }
 
-    if (shouldNotify)
-    {
-        LOGF_INFO(
-            "%s: aggregate state changed to %s; notifying listeners",
-            logPrefix,
-            toString(event.state).c_str());
-        notifyListeners(event);
-
-        if (event.state == State::CRITICAL_SHUTDOWN_IMMINENT)
-        {
-            LOGF_INFO(
-                "%s: aggregate state entered CRITICAL_SHUTDOWN_IMMINENT; initiating autonomous power-off",
-                logPrefix);
-            scheduleThermalShutdown(kThermalShutdownReason);
-        }
-    }
+    flushPendingStateEvents();
 }
 
 void ThermalSensor::notifyListeners(const ActionEvent& event)
@@ -511,12 +528,10 @@ void ThermalSensor::recordThermalShutdownReason(const std::string& reasonString)
         return;
     }
 
-    const android::String16 binderReason(reasonString.c_str());
-
     // Preserve the next-boot diagnostic cause before the HAL initiates its
     // independent system power-off sequence.
     const android::binder::Status causeStatus =
-        boot->setBootCause(BootCause::THERMAL_RESET, binderReason);
+        boot->setBootCause(BootCause::THERMAL_RESET, reasonString);
     if (!causeStatus.isOk())
     {
         LOGF_ERROR(

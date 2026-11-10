@@ -291,10 +291,15 @@ bool validateSensorConfiguration(
         return false;
     }
 
-    if (sensorConfig.policy.shutdownMinDowntimeSeconds < 0 ||
-        sensorConfig.policy.recovery.minCooldownSeconds < 0)
+    if (sensorConfig.policy.shutdownMinDowntimeSeconds < 0)
     {
         setError(outError, sensorLabel + " policy durations must be non-negative");
+        return false;
+    }
+
+    if (sensorConfig.policy.maxStateEventsPerMinute <= 0)
+    {
+        setError(outError, sensorLabel + " max_state_events_per_minute must be positive");
         return false;
     }
 
@@ -386,20 +391,10 @@ bool vcomponent_Thermal_get_sensor_info(
         return false;
     }
 
-    if (!readStringField(
-            kvpTestInstance,
-            policyPrefix + "recovery.strategy",
-            &sensorConfig.policy.recovery.strategy,
-            outError,
-            false))
-    {
-        return false;
-    }
-
     if (!readInt32Field(
             kvpTestInstance,
-            policyPrefix + "recovery.min_cooldown_seconds",
-            &sensorConfig.policy.recovery.minCooldownSeconds,
+            policyPrefix + "max_state_events_per_minute",
+            &sensorConfig.policy.maxStateEventsPerMinute,
             outError,
             false))
     {

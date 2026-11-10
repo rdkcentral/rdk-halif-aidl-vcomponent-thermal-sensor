@@ -30,9 +30,10 @@
  * and current temperature telemetry as defined by the thermal sensor AIDL
  * contract. Runtime sensor records are initialized from the selected HFP YAML
  * profile. The UT control plane listens for IThermalSensor temperature_update
- * messages, updates in-memory telemetry, notifies listeners on aggregate state
- * transitions, persists BootCause::THERMAL_RESET through Boot Reason, and
- * autonomously executes systemctl poweroff when the aggregate policy enters
+ * messages, updates in-memory telemetry, notifies listeners on per-sensor state
+ * transitions subject to each sensor's event limit, persists
+ * BootCause::THERMAL_RESET through Boot Reason, and autonomously executes
+ * systemctl poweroff when any sensor enters
  * CRITICAL_SHUTDOWN_IMMINENT.
  */
 
@@ -51,6 +52,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -171,6 +173,10 @@ private:
         vcomponent::utility::ThermalSensorConfig config;
         TemperatureReading reading;
         State state{State::NORMAL};
+        State lastEmittedState{State::NORMAL};
+        std::int64_t stateChangedMonotonicMs{0};
+        // Local monotonic dispatch times, never control-plane sample timestamps.
+        std::deque<std::int64_t> emittedEventTimesMs;
     };
 
     /**
@@ -184,8 +190,8 @@ private:
      * @brief Poll the UT control-plane queue and apply thermal updates.
      *
      * The worker consumes temperature_update commands and delegates all policy
-     * evaluation to applyTemperatureSample(). The state-transition path
-     * notifies listeners, persists the thermal cause, and requests power-off.
+     * evaluation to applyTemperatureSample(). It also flushes rate-limited
+     * per-sensor events without requiring another temperature sample.
      */
     void utWorkerLoop();
 
@@ -217,6 +223,15 @@ private:
      * @return Evaluated high-level thermal state.
      */
     State evaluateSensorState(const SensorRuntime& runtime, double temperatureCelsius) const;
+
+    /**
+     * @brief Emit each sensor's latest pending state when its rate limit allows.
+     *
+     * Called after samples and periodically by the worker so held events do
+     * not require a new sample. Shutdown events bypass the limit and trigger
+     * power-off after notification. Binder calls occur outside m_mutex.
+     */
+    void flushPendingStateEvents();
 
     /**
      * @brief Notify registered listeners of a state transition.
@@ -273,7 +288,7 @@ private:
 
     // UT control plane owned by the service for IThermalSensor temperature_update
     // messages. Samples entering CRITICAL_SHUTDOWN_IMMINENT flow through the
-    // normal policy path, notify listeners for time-critical cleanup, persist
+    // per-sensor policy path, notify listeners for time-critical cleanup, persist
     // THERMAL_RESET, then autonomously invoke systemctl poweroff.
     vcomponent::thermal::controller::ThermalUtController m_ut;
 };

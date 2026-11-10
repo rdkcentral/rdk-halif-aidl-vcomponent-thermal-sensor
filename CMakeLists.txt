@@ -65,12 +65,16 @@ endif()
 # Optional version (fallback)
 # ----------------------
 if(NOT DEFINED VCOMPONENT_VERSION)
-  set(VCOMPONENT_VERSION "0.2.0.0")
+  set(VCOMPONENT_VERSION "0.3.0.0")
   message(WARNING "VCOMPONENT_VERSION not set. Using default: ${VCOMPONENT_VERSION}")
 endif()
 
+if(NOT DEFINED VCOMPONENT_INCLUDE_VERSION)
+  set(VCOMPONENT_INCLUDE_VERSION "0.3.0.0")
+endif()
+
 if(NOT DEFINED BOOTREASON_VERSION)
-  set(BOOTREASON_VERSION "0.1.0.0")
+  set(BOOTREASON_VERSION "0.2.0.0")
   message(WARNING "BOOTREASON_VERSION not set. Using default: ${BOOTREASON_VERSION}")
 endif()
 
@@ -160,9 +164,6 @@ if(USE_SYSROOT)
     find_library(THERMAL_HAL_LIB
     NAMES
         sensor-v${VCOMPONENT_VERSION}-cpp
-        sensor-vcurrent-cpp
-        sensor
-        hal_aidl
     HINTS
         "${CMAKE_SYSROOT}/usr/lib/vendor/rdk-halif-aidl"
     )
@@ -174,23 +175,9 @@ else()
         message(FATAL_ERROR "HALIF_LIB_DIR not set")
     endif()
 
-    file(GLOB THERMAL_HAL_LIB
-        "${HALIF_LIB_DIR}/libsensor*-cpp.so"
-        "${HALIF_LIB_DIR}/libsensor*.so"
-        "${HALIF_LIB_DIR}/*sensor*-cpp.so"
-        "${HALIF_LIB_DIR}/*sensor*.so"
-    )
-    list(LENGTH THERMAL_HAL_LIB _HAL_LIB_COUNT)
-    if(_HAL_LIB_COUNT EQUAL 0)
-        message(FATAL_ERROR "Sensor/Thermal HALIF lib not found in ${HALIF_LIB_DIR}")
-    endif()
-
-    list(SORT THERMAL_HAL_LIB)
-    math(EXPR _HAL_LIB_LAST "${_HAL_LIB_COUNT} - 1")
-    list(GET THERMAL_HAL_LIB ${_HAL_LIB_LAST} THERMAL_HAL_LIB)
-
+    set(THERMAL_HAL_LIB "${HALIF_LIB_DIR}/libsensor-v${VCOMPONENT_VERSION}-cpp.so")
     if(NOT EXISTS "${THERMAL_HAL_LIB}")
-        message(FATAL_ERROR "Sensor/Thermal HALIF lib not found in ${HALIF_LIB_DIR}")
+        message(FATAL_ERROR "Sensor/Thermal HALIF ${VCOMPONENT_VERSION} lib not found: ${THERMAL_HAL_LIB}")
     endif()
 endif()
 
@@ -204,8 +191,6 @@ if(USE_SYSROOT)
     find_library(BOOTREASON_HAL_LIB
     NAMES
         bootreason-v${BOOTREASON_VERSION}-cpp
-        bootreason-vcurrent-cpp
-        bootreason
     HINTS
         "${CMAKE_SYSROOT}/usr/lib/vendor/rdk-halif-aidl"
     )
@@ -217,23 +202,9 @@ else()
         message(FATAL_ERROR "HALIF_LIB_DIR not set")
     endif()
 
-    file(GLOB BOOTREASON_HAL_LIB
-        "${HALIF_LIB_DIR}/libbootreason*-cpp.so"
-        "${HALIF_LIB_DIR}/libbootreason*.so"
-        "${HALIF_LIB_DIR}/*bootreason*-cpp.so"
-        "${HALIF_LIB_DIR}/*bootreason*.so"
-    )
-    list(LENGTH BOOTREASON_HAL_LIB _BOOT_HAL_LIB_COUNT)
-    if(_BOOT_HAL_LIB_COUNT EQUAL 0)
-        message(FATAL_ERROR "BootReason HALIF lib not found in ${HALIF_LIB_DIR}")
-    endif()
-
-    list(SORT BOOTREASON_HAL_LIB)
-    math(EXPR _BOOT_HAL_LIB_LAST "${_BOOT_HAL_LIB_COUNT} - 1")
-    list(GET BOOTREASON_HAL_LIB ${_BOOT_HAL_LIB_LAST} BOOTREASON_HAL_LIB)
-
+    set(BOOTREASON_HAL_LIB "${HALIF_LIB_DIR}/libbootreason-v${BOOTREASON_VERSION}-cpp.so")
     if(NOT EXISTS "${BOOTREASON_HAL_LIB}")
-        message(FATAL_ERROR "BootReason HALIF lib not found in ${HALIF_LIB_DIR}")
+        message(FATAL_ERROR "BootReason HALIF ${BOOTREASON_VERSION} lib not found: ${BOOTREASON_HAL_LIB}")
     endif()
 endif()
 
